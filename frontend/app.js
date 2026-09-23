@@ -44,7 +44,21 @@ function limpiarFormulario() {
   mensajeCancelar.textContent = "";
 }
 
+function mostrarCargando() {
+  tabla.innerHTML = `
+    <tr>
+      <td colspan="7">
+        <div class="estado-carga">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Cargando registros del servidor...</span>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
 async function cargarProductos() {
+  mostrarCargando();
   try {
     const resp = await fetch(API_BASE_URL);
     if (!resp.ok) throw new Error("No se pudo obtener el listado de productos.");
