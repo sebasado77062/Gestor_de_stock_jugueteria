@@ -194,6 +194,31 @@
     font-size: 14px;
   }
 
+  .estado-carga{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap: 12px;
+    padding: 34px 10px;
+    color: #6b6280;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .spinner{
+    width: 20px;
+    height: 20px;
+    border: 3px solid var(--linea);
+    border-top-color: var(--naranja);
+    border-radius: 50%;
+    animation: girar 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes girar{
+    to{ transform: rotate(360deg); }
+  }
+
   footer{
     text-align:center;
     font-size: 12px;
@@ -264,8 +289,16 @@
           <th></th>
         </tr>
       </thead>
+      <!-- Contenedor vacío: JavaScript inyecta aquí las filas de productos obtenidas desde la API -->
       <tbody id="tabla-productos">
-        <tr><td colspan="7" class="vacio">Cargando productos…</td></tr>
+        <tr>
+          <td colspan="7">
+            <div class="estado-carga">
+              <span class="spinner" aria-hidden="true"></span>
+              <span>Cargando registros del servidor...</span>
+            </div>
+          </td>
+        </tr>
       </tbody>
     </table>
   </section>
