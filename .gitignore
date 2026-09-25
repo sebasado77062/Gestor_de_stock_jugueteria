@@ -1,0 +1,41 @@
+# --- Secretos y configuración local ---
+.env
+.env.*
+!.env.example
+
+# --- Bases de datos locales (nunca se versionan) ---
+*.db
+*.sqlite
+*.sqlite3
+services/*/data/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Node / frontend (por si se agregan herramientas de build a futuro) ---
+node_modules/
+
+# --- Docker ---
+docker-compose.override.yml
+
+# --- Editores / SO ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log

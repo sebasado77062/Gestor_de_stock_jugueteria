@@ -1,0 +1,46 @@
+services:
+  productos:
+    build:
+      context: ./services/productos
+    container_name: jugueteria-productos
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${PRODUCTOS_DATABASE_URL:-sqlite:////app/data/jugueteria.db}
+    volumes:
+      # Persiste la base de datos SQLite fuera del contenedor. El archivo
+      # jugueteria.db vive solo en este volumen: nunca se versiona en el repo.
+      - productos_data:/app/data
+    ports:
+      - "${PRODUCTOS_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: jugueteria-frontend
+    restart: unless-stopped
+    environment:
+      # URL desde la que el NAVEGADOR del usuario llega a la API. Con
+      # `docker compose up` en un solo host, se accede vía el puerto
+      # publicado en el host (no el nombre de servicio interno "productos",
+      # que solo resuelve entre contenedores).
+      PRODUCTOS_API_URL: ${PRODUCTOS_API_URL:-http://localhost:8000}
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      productos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  productos_data:

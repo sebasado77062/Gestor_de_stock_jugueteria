@@ -2,9 +2,13 @@
  * Frontend simple (vanilla JS) para probar el CRUD de Producto.
  * Consume la API RESTful del backend FastAPI.
  *
- * Si el backend corre en otro host/puerto, cambiar API_BASE_URL.
+ * La URL base de la API se lee de window.APP_CONFIG, generado en runtime
+ * por el contenedor de nginx a partir de la variable de entorno
+ * PRODUCTOS_API_URL (ver frontend/docker-entrypoint.sh y config.js).
+ * Si no existe (por ejemplo, abriendo el HTML directo sin Docker), cae
+ * a localhost:8000 como valor por defecto para desarrollo local.
  */
-const API_BASE_URL = "http://127.0.0.1:8000/api/v1/productos";
+const API_BASE_URL = `${(window.APP_CONFIG && window.APP_CONFIG.PRODUCTOS_API_URL) || "http://localhost:8000"}/api/v1/productos`;
 
 const form = document.getElementById("form-producto");
 const tabla = document.getElementById("tabla-productos");
