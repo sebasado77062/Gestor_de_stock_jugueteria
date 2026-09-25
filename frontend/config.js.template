@@ -1,0 +1,5 @@
+// Generado automáticamente al iniciar el contenedor (ver docker-entrypoint.sh).
+// No editar a mano: los valores ${...} se reemplazan con variables de entorno.
+window.APP_CONFIG = {
+  PRODUCTOS_API_URL: "${PRODUCTOS_API_URL}"
+};

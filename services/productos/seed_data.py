@@ -2,8 +2,9 @@
 Script opcional para precargar la base de datos con productos de ejemplo.
 Útil para el live testing (mostrar el GET con datos ya cargados).
 
-Ejecutar desde la carpeta backend/:
+Ejecutar desde services/productos/ (localmente) o dentro del contenedor:
     python seed_data.py
+    docker compose exec productos python seed_data.py
 """
 from app.database.db import Base, engine, SessionLocal
 from app.models.producto import Producto

@@ -76,3 +76,12 @@ app.include_router(producto_router.router)
 def root():
     """Endpoint raíz simple para verificar que el servidor está activo."""
     return {"mensaje": "API Gestor de Stock - Juguetería. Ver /docs para la documentación interactiva."}
+
+
+@app.get("/health", tags=["Root"])
+def health():
+    """
+    Healthcheck simple para orquestadores (Docker healthcheck, balanceadores,
+    monitoreo). Devuelve 200 si el proceso está vivo y puede responder.
+    """
+    return {"status": "ok", "service": "productos"}
