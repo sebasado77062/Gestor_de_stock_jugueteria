@@ -225,6 +225,14 @@
     color:#a89fbb;
     padding: 10px 0 30px;
   }
+
+  .nota-campo{
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+    font-weight: 400;
+    color: #a89fbb;
+  }
 </style>
 </head>
 <body>
@@ -260,8 +268,11 @@
         <label>Precio de venta ($)
           <input type="number" id="precio_venta" step="0.01" min="0" required placeholder="0.00">
         </label>
-        <label>Stock actual
+        <label id="label-stock-actual">Stock actual
           <input type="number" id="stock_actual" min="0" required placeholder="0">
+          <small id="nota-stock-actual" class="nota-campo" style="display:none;">
+            El stock actual no se edita aquí: se gestiona mediante movimientos de inventario.
+          </small>
         </label>
         <label>Stock mínimo
           <input type="number" id="stock_minimo" min="0" required placeholder="0">

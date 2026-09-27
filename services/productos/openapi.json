@@ -1,0 +1,505 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API - Sistema de Gestión de Stock para Juguetería",
+    "description": "AE1 - CRUD funcional de la entidad Producto",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/productos": {
+      "get": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Listar Productos",
+        "description": "GET /api/v1/productos -> 200 OK con el listado.\n\nPor defecto solo devuelve productos activos. Usar\n?incluir_inactivos=true para ver también los dados de baja.",
+        "operationId": "listar_productos_api_v1_productos_get",
+        "parameters": [
+          {
+            "name": "incluir_inactivos",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Si es true, incluye también los productos dados de baja (activo=false).",
+              "default": false,
+              "title": "Incluir Inactivos"
+            },
+            "description": "Si es true, incluye también los productos dados de baja (activo=false)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProductoOut"
+                  },
+                  "title": "Response Listar Productos Api V1 Productos Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Crear Producto",
+        "description": "POST /api/v1/productos -> 201 Created.",
+        "operationId": "crear_producto_api_v1_productos_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductoCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductoOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/productos/{id_producto}": {
+      "get": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Obtener Producto",
+        "description": "GET /api/v1/productos/{id} -> 200 OK o 404 Not Found.\n\nDevuelve el producto exista o no esté activo (para permitir, por\nejemplo, ver el detalle de un producto dado de baja).",
+        "operationId": "obtener_producto_api_v1_productos__id_producto__get",
+        "parameters": [
+          {
+            "name": "id_producto",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Producto"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductoOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Actualizar Producto",
+        "description": "PUT /api/v1/productos/{id} -> 200 OK o 404 Not Found.\n\nActualiza únicamente los datos descriptivos del producto (nombre, marca,\nprecio_venta, stock_minimo, categoria). NO modifica stock_actual bajo\nninguna circunstancia: el schema ProductoUpdate ni siquiera acepta ese\ncampo (ver issue #6). El stock se gestiona mediante movimientos.",
+        "operationId": "actualizar_producto_api_v1_productos__id_producto__put",
+        "parameters": [
+          {
+            "name": "id_producto",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Producto"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductoUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductoOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Eliminar Producto",
+        "description": "DELETE /api/v1/productos/{id}.\n\nComportamiento (issue #6):\n- 204 No Content: el producto no tenía movimientos asociados y se\n  eliminó físicamente.\n- 200 OK con el producto en el body (activo=false): el producto tenía\n  movimientos asociados, así que se dio de baja lógica en lugar de\n  eliminarlo, para preservar la trazabilidad del historial.\n- 404 Not Found: no existía un producto con ese id.",
+        "operationId": "eliminar_producto_api_v1_productos__id_producto__delete",
+        "parameters": [
+          {
+            "name": "id_producto",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Producto"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "tags": [
+          "Root"
+        ],
+        "summary": "Root",
+        "description": "Endpoint raíz simple para verificar que el servidor está activo.",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Root"
+        ],
+        "summary": "Health",
+        "description": "Healthcheck simple para orquestadores (Docker healthcheck, balanceadores,\nmonitoreo). Devuelve 200 si el proceso está vivo y puede responder.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ProductoCreate": {
+        "properties": {
+          "nombre": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Nombre",
+            "description": "Nombre del producto"
+          },
+          "marca": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marca"
+          },
+          "precio_venta": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Precio Venta",
+            "description": "Precio de venta, no puede ser negativo"
+          },
+          "stock_minimo": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Stock Minimo",
+            "description": "Stock mínimo, no puede ser negativo"
+          },
+          "categoria": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categoria"
+          },
+          "stock_actual": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Stock Actual",
+            "description": "Stock inicial al crear el producto",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "nombre",
+          "precio_venta",
+          "stock_minimo"
+        ],
+        "title": "ProductoCreate",
+        "description": "Schema usado en el POST /api/v1/productos (creación).\n\nA diferencia de ProductoUpdate, sí acepta stock_actual: al dar de alta\nun producto por primera vez hace falta declarar con cuánto stock inicial\nentra al inventario. Es opcional (default 0) para permitir cargar la\nficha del producto y sumar stock después mediante un movimiento de\nentrada, una vez que exista services/movimientos."
+      },
+      "ProductoOut": {
+        "properties": {
+          "nombre": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Nombre",
+            "description": "Nombre del producto"
+          },
+          "marca": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marca"
+          },
+          "precio_venta": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Precio Venta",
+            "description": "Precio de venta, no puede ser negativo"
+          },
+          "stock_minimo": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Stock Minimo",
+            "description": "Stock mínimo, no puede ser negativo"
+          },
+          "categoria": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categoria"
+          },
+          "id_producto": {
+            "type": "integer",
+            "title": "Id Producto"
+          },
+          "stock_actual": {
+            "type": "integer",
+            "title": "Stock Actual"
+          },
+          "activo": {
+            "type": "boolean",
+            "title": "Activo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nombre",
+          "precio_venta",
+          "stock_minimo",
+          "id_producto",
+          "stock_actual",
+          "activo"
+        ],
+        "title": "ProductoOut",
+        "description": "Schema de salida: lo que la API devuelve al cliente."
+      },
+      "ProductoUpdate": {
+        "properties": {
+          "nombre": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Nombre",
+            "description": "Nombre del producto"
+          },
+          "marca": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marca"
+          },
+          "precio_venta": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Precio Venta",
+            "description": "Precio de venta, no puede ser negativo"
+          },
+          "stock_minimo": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Stock Minimo",
+            "description": "Stock mínimo, no puede ser negativo"
+          },
+          "categoria": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categoria"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nombre",
+          "precio_venta",
+          "stock_minimo"
+        ],
+        "title": "ProductoUpdate",
+        "description": "Schema usado en el PUT /api/v1/productos/{id} (actualización).\n\nDeliberadamente NO incluye stock_actual. El stock operativo se modifica\núnicamente a través de movimientos de inventario (entradas, salidas,\najustes), nunca editando la ficha del producto. Esto evita que una\nedición de datos descriptivos (nombre, precio, marca, categoría) pise\naccidentalmente el stock vigente con un valor desactualizado que el\ncliente tenía cargado en un formulario.\n\nVer services/productos/README.md, sección \"Decisiones de diseño\",\npara el detalle de este cambio (issue #6)."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

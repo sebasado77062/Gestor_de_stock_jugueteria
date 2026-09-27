@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -7,14 +9,28 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.database.db import Base, engine
 from app.routers import producto_router
 
-# Crea las tablas definidas en los modelos si todavía no existen.
-Base.metadata.create_all(bind=engine)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Crea las tablas definidas en los modelos si todavía no existen, al
+    arrancar la aplicación (no al importar el módulo). Esto evita que el
+    simple hecho de importar app.main (por ejemplo, desde los tests)
+    intente escribir en el archivo de base de datos real: los tests
+    sobreescriben la dependencia get_db con su propia sesión en memoria y
+    crean sus tablas por su cuenta (ver tests/conftest.py).
+    """
+    Base.metadata.create_all(bind=engine)
+    yield
+
 
 app = FastAPI(
     title="API - Sistema de Gestión de Stock para Juguetería",
     description="AE1 - CRUD funcional de la entidad Producto",
     version="1.0.0",
+    lifespan=lifespan,
 )
+
 
 # CORS: permite que el frontend, servido desde otro origen/puerto, llame a la API.
 app.add_middleware(

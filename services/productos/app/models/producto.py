@@ -3,7 +3,7 @@ Modelo de la entidad Producto.
 
 Capa de Persistencia.
 """
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Column, Integer, String, Float, Boolean
 from app.database.db import Base
 
 
@@ -17,3 +17,9 @@ class Producto(Base):
     stock_actual = Column(Integer, nullable=False, default=0)
     stock_minimo = Column(Integer, nullable=False, default=0)
     categoria = Column(String, nullable=True)
+
+    # Soft delete: un producto con movimientos asociados no se borra
+    # físicamente (perdería trazabilidad del historial de stock). En su
+    # lugar se marca activo=False y se excluye de los listados por defecto.
+    # Ver services/productos/README.md para la justificación completa.
+    activo = Column(Boolean, nullable=False, default=True, server_default="1")

@@ -26,6 +26,7 @@ const campoCategoria = document.getElementById("categoria");
 const campoPrecio = document.getElementById("precio_venta");
 const campoStockActual = document.getElementById("stock_actual");
 const campoStockMinimo = document.getElementById("stock_minimo");
+const notaStockActual = document.getElementById("nota-stock-actual");
 
 function mostrarEstado(mensaje, tipo = "ok") {
   estadoGlobal.textContent = mensaje;
@@ -46,6 +47,11 @@ function limpiarFormulario() {
   btnGuardar.textContent = "Guardar producto";
   btnCancelar.style.display = "none";
   mensajeCancelar.textContent = "";
+  // Al crear un producto nuevo, el stock actual sí es editable (es el
+  // stock inicial). Al editar uno existente, se bloquea (ver editarProducto).
+  campoStockActual.disabled = false;
+  campoStockActual.required = true;
+  notaStockActual.style.display = "none";
 }
 
 function mostrarCargando() {
@@ -130,6 +136,12 @@ async function editarProducto(id) {
     btnGuardar.textContent = "Guardar cambios";
     btnCancelar.style.display = "inline-block";
     mensajeCancelar.textContent = `Editando producto #${prod.id_producto}`;
+    // El stock actual no se edita desde la ficha del producto: se gestiona
+    // mediante movimientos de inventario. Se muestra de solo lectura para
+    // que el usuario vea el valor vigente sin poder modificarlo por acá.
+    campoStockActual.disabled = true;
+    campoStockActual.required = false;
+    notaStockActual.style.display = "block";
     window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (error) {
     mostrarEstado("No se pudo cargar el producto para editar.", "error");
@@ -144,9 +156,15 @@ async function eliminarProducto(id) {
     if (resp.status === 204) {
       mostrarEstado("Producto eliminado correctamente.", "ok");
       cargarProductos();
+    } else if (resp.status === 200) {
+      // El producto tenía movimientos asociados: se dio de baja lógica
+      // (activo=false) en vez de eliminarse físicamente, para conservar
+      // el historial. No aparece más en el listado, pero sigue existiendo.
+      mostrarEstado("El producto tiene movimientos registrados: se dio de baja en vez de eliminarse.", "ok");
+      cargarProductos();
     } else {
       const data = await resp.json();
-      mostrarEstado(data.mensaje || "No se pudo eliminar el producto.", "error");
+      mostrarEstado(data.mensaje || data.detail || "No se pudo eliminar el producto.", "error");
     }
   } catch (error) {
     mostrarEstado("Error de conexión al eliminar el producto.", "error");
@@ -156,17 +174,25 @@ async function eliminarProducto(id) {
 form.addEventListener("submit", async (evento) => {
   evento.preventDefault();
 
+  const idExistente = campoId.value;
+  const esEdicion = Boolean(idExistente);
+
   const payload = {
     nombre: campoNombre.value.trim(),
     marca: campoMarca.value.trim() || null,
     categoria: campoCategoria.value.trim() || null,
     precio_venta: parseFloat(campoPrecio.value),
-    stock_actual: parseInt(campoStockActual.value, 10),
     stock_minimo: parseInt(campoStockMinimo.value, 10),
   };
 
-  const idExistente = campoId.value;
-  const esEdicion = Boolean(idExistente);
+  // stock_actual solo se envía al crear (stock inicial). En edición no se
+  // incluye: el backend (PUT) ni siquiera acepta este campo, ya que el
+  // stock se gestiona mediante movimientos de inventario, no editando la
+  // ficha del producto.
+  if (!esEdicion) {
+    payload.stock_actual = parseInt(campoStockActual.value, 10);
+  }
+
   const url = esEdicion ? `${API_BASE_URL}/${idExistente}` : API_BASE_URL;
   const metodo = esEdicion ? "PUT" : "POST";
 
@@ -184,7 +210,7 @@ form.addEventListener("submit", async (evento) => {
       limpiarFormulario();
       cargarProductos();
     } else {
-      mostrarEstado(data.mensaje || "Ocurrió un error al guardar el producto.", "error");
+      mostrarEstado(data.mensaje || data.detail || "Ocurrió un error al guardar el producto.", "error");
     }
   } catch (error) {
     mostrarEstado("Error de conexión con la API.", "error");
