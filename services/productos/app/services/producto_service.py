@@ -11,14 +11,35 @@ from app.models.producto import Producto
 from app.schemas.producto import ProductoCreate, ProductoUpdate
 
 
-def obtener_productos(db: Session):
-    """RF02: Listar todos los productos registrados en el inventario."""
-    return db.query(Producto).all()
+def obtener_productos(db: Session, incluir_inactivos: bool = False):
+    """
+    RF02: Listar todos los productos registrados en el inventario.
+
+    Por defecto excluye los productos dados de baja (activo=False), ya que
+    conceptualmente ya no forman parte del catálogo operativo. Se pueden
+    incluir explícitamente con incluir_inactivos=True (por ejemplo, para una
+    vista de administración o auditoría).
+    """
+    query = db.query(Producto)
+    if not incluir_inactivos:
+        query = query.filter(Producto.activo.is_(True))
+    return query.all()
 
 
-def obtener_producto_por_id(db: Session, id_producto: int):
-    """RF03: Consultar un producto específico a partir de su ID_Producto."""
-    return db.query(Producto).filter(Producto.id_producto == id_producto).first()
+def obtener_producto_por_id(db: Session, id_producto: int, incluir_inactivos: bool = True):
+    """
+    RF03: Consultar un producto específico a partir de su ID_Producto.
+
+    A diferencia del listado, por defecto SÍ incluye inactivos: acceder a un
+    producto por ID puntual (para editarlo, verlo en un detalle, o para que
+    movimientos valide que existe) debe seguir funcionando aunque esté dado
+    de baja. Quien necesite excluir inactivos explícitamente puede pasar
+    incluir_inactivos=False.
+    """
+    query = db.query(Producto).filter(Producto.id_producto == id_producto)
+    if not incluir_inactivos:
+        query = query.filter(Producto.activo.is_(True))
+    return query.first()
 
 
 def crear_producto(db: Session, producto: ProductoCreate):
@@ -31,7 +52,15 @@ def crear_producto(db: Session, producto: ProductoCreate):
 
 
 def actualizar_producto(db: Session, id_producto: int, datos: ProductoUpdate):
-    """RF04: Modificar los datos de un producto existente."""
+    """
+    RF04: Modificar los datos descriptivos de un producto existente.
+
+    IMPORTANTE (issue #6): datos es un ProductoUpdate, que no incluye
+    stock_actual. Por lo tanto este método nunca toca ni pisa el stock
+    vigente del producto, sin importar qué campos se envíen: solo actualiza
+    nombre, marca, precio_venta, stock_minimo y categoria. El stock se
+    modifica exclusivamente a través de movimientos de inventario.
+    """
     producto_db = obtener_producto_por_id(db, id_producto)
     if not producto_db:
         return None
@@ -42,11 +71,47 @@ def actualizar_producto(db: Session, id_producto: int, datos: ProductoUpdate):
     return producto_db
 
 
+def tiene_movimientos_asociados(db: Session, id_producto: int) -> bool:
+    """
+    Indica si el producto tiene movimientos de stock registrados.
+
+    Placeholder hasta que exista services/movimientos: hoy siempre devuelve
+    False porque no hay ninguna tabla ni servicio de movimientos con quién
+    consultar. Se deja esta función como el único punto de integración a
+    modificar cuando movimientos exista (ya sea consultando su API REST, o
+    una tabla compartida), para no tener que tocar eliminar_producto de
+    nuevo en ese momento.
+    """
+    return False
+
+
 def eliminar_producto(db: Session, id_producto: int):
-    """RF05: Eliminar un producto del inventario."""
+    """
+    RF05: Eliminar (dar de baja) un producto del inventario.
+
+    Comportamiento (issue #6):
+    - Si el producto NO tiene movimientos asociados: se borra físicamente
+      de la base de datos, como antes.
+    - Si el producto TIENE movimientos asociados: no se borra el registro
+      (se perdería la trazabilidad histórica de esos movimientos), sino que
+      se marca activo=False (soft delete / baja lógica). El producto deja
+      de aparecer en el listado por defecto (GET /productos) pero sigue
+      siendo consultable por ID y conserva su historial.
+
+    Devuelve el objeto Producto afectado (borrado o dado de baja), o None
+    si no existía. El llamador puede inspeccionar producto.activo para
+    saber cuál de los dos casos ocurrió.
+    """
     producto_db = obtener_producto_por_id(db, id_producto)
     if not producto_db:
         return None
+
+    if tiene_movimientos_asociados(db, id_producto):
+        producto_db.activo = False
+        db.commit()
+        db.refresh(producto_db)
+        return producto_db
+
     db.delete(producto_db)
     db.commit()
     return producto_db

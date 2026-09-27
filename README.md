@@ -10,15 +10,18 @@ nginx.
 .
 ├── docker-compose.yml
 ├── .env.example
+├── docs/
+│   └── ARQUITECTURA.md   # Diagramas (servicios, capas, flujo de baja lógica)
 ├── services/
-│   ├── productos/        # API REST del CRUD de Producto (FastAPI + SQLite)
+│   ├── productos/         # API REST del CRUD de Producto (FastAPI + SQLite)
 │   └── movimientos/       # Placeholder: aún no implementado (ver su README)
-└── frontend/              # Panel de administración estático, servido con nginx
+└── frontend/               # Panel de administración estático, servido con nginx
 ```
 
 Cada carpeta bajo `services/` es un servicio independiente, con su propio
 Dockerfile y dependencias. `frontend/` es la interfaz web que consume la API
-de `productos`.
+de `productos`. Ver [`docs/ARQUITECTURA.md`](./docs/ARQUITECTURA.md) para
+diagramas de cómo se relacionan estas piezas.
 
 ## Requisitos
 
@@ -103,6 +106,53 @@ generado por Docker, `app.js` cae automáticamente a
 
 Todavía no está implementado. Ver `services/movimientos/README.md` para el
 alcance previsto y por qué no forma parte de `docker-compose.yml` por ahora.
+
+## Contrato de la API
+
+El contrato OpenAPI del servicio `productos` está exportado en
+[`services/productos/openapi.json`](./services/productos/openapi.json).
+Regenerarlo tras cualquier cambio de schemas o rutas:
+
+```bash
+cd services/productos
+python export_openapi.py
+```
+
+También está disponible en vivo mientras el servicio corre, en
+`http://localhost:8000/docs` (Swagger UI) y `http://localhost:8000/openapi.json`.
+
+## Tests
+
+```bash
+cd services/productos
+pip install -r requirements-dev.txt
+pytest
+```
+
+La suite (31 tests) cubre CRUD, validaciones de entrada, la baja lógica de
+productos y flujos de integración de punta a punta. Corre contra una base
+SQLite en memoria aislada por test — no requiere Docker ni toca la base de
+datos real. Ver el detalle de qué cubre cada archivo en
+[`services/productos/README.md`](./services/productos/README.md#tests).
+
+## Calidad y decisiones de diseño
+
+Dos correcciones de diseño relevantes en el servicio `productos` (ver el
+detalle completo, con la justificación y los tests que las respaldan, en
+[`services/productos/README.md`](./services/productos/README.md#decisiones-de-diseño-issue-6)):
+
+- **El PUT de productos ya no puede pisar `stock_actual`.** El schema de
+  actualización no incluye ese campo: el stock se modifica exclusivamente
+  vía movimientos de inventario, nunca editando la ficha del producto.
+- **Baja lógica en vez de borrado físico** cuando un producto tiene
+  movimientos de stock asociados (se marca `activo=false` en lugar de
+  eliminarse), para no perder la trazabilidad histórica. Ver el diagrama de
+  flujo en [`docs/ARQUITECTURA.md`](./docs/ARQUITECTURA.md#flujo-de-delete-apiv1productosid-issue-6).
+
+Las limitaciones conocidas del sistema (falta de autenticación, ausencia de
+CI, alcance de SQLite, etc.) están documentadas en
+[`docs/ARQUITECTURA.md`](./docs/ARQUITECTURA.md#limitaciones-del-sistema-resumen)
+y, con más detalle por servicio, en el README de `services/productos`.
 
 ## Healthchecks
 
