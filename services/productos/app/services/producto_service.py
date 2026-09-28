@@ -6,6 +6,7 @@ modelo, y las reglas propias del dominio (por ejemplo, verificar que el
 producto exista antes de actualizarlo o eliminarlo). Las rutas (routers)
 no acceden directamente a la base de datos: siempre pasan por aquí.
 """
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 from app.models.producto import Producto
 from app.schemas.producto import ProductoCreate, ProductoUpdate
@@ -130,3 +131,44 @@ def eliminar_producto(db: Session, id_producto: int):
     db.delete(producto_db)
     db.commit()
     return producto_db
+
+
+def ajustar_stock_atomico(db: Session, id_producto: int, delta: int):
+    """
+    Ajusta el stock de un producto de forma ATÓMICA a nivel de base de datos,
+    evitando la condición de carrera clásica de "leer -> validar en Python ->
+    escribir" (lost update / sobreventa) cuando llegan ventas concurrentes.
+
+    delta > 0 -> incrementa el stock (ingreso, devolución). Siempre se aplica.
+    delta < 0 -> intenta decrementar |delta| unidades (venta, estropeo). Solo
+                 se aplica si stock_actual >= |delta|.
+
+    Devuelve:
+        "ok"        si el ajuste se aplicó.
+        "sin_stock" si no había stock suficiente (solo puede pasar con delta < 0).
+        None        si el producto no existe.
+    """
+    producto = obtener_producto_por_id(db, id_producto)
+    if not producto:
+        return None
+
+    if delta >= 0:
+        sentencia = (
+            update(Producto)
+            .where(Producto.id_producto == id_producto)
+            .values(stock_actual=Producto.stock_actual + delta)
+        )
+    else:
+        sentencia = (
+            update(Producto)
+            .where(Producto.id_producto == id_producto)
+            .where(Producto.stock_actual >= -delta)
+            .values(stock_actual=Producto.stock_actual + delta)
+        )
+
+    resultado = db.execute(sentencia)
+    db.commit()
+
+    if resultado.rowcount == 0:
+        return "sin_stock"
+    return "ok"
