@@ -224,6 +224,58 @@
         }
       }
     },
+    "/api/v1/dev/seed-productos": {
+      "post": {
+        "tags": [
+          "Desarrollo / Datos de prueba"
+        ],
+        "summary": "Cargar productos de prueba (solo desarrollo)",
+        "description": "Genera e inserta `cantidad` productos con nombre, marca, categoría,\nprecio y stock aleatorios (ver app/utils/datos_prueba.py). Pensado para\nel botón \"Cargar datos de prueba\" del frontend.\n\nDevuelve 403 si HABILITAR_SEED_ENDPOINT=false en el entorno.",
+        "operationId": "seed_productos_api_v1_dev_seed_productos_post",
+        "parameters": [
+          {
+            "name": "cantidad",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Cantidad de productos a generar (1-200).",
+              "default": 20,
+              "title": "Cantidad"
+            },
+            "description": "Cantidad de productos a generar (1-200)."
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProductoOut"
+                  },
+                  "title": "Response Seed Productos Api V1 Dev Seed Productos Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/": {
       "get": {
         "tags": [

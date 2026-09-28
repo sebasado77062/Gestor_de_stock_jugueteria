@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.database.db import Base, engine
-from app.routers import producto_router
+from app.routers import producto_router, seed_router
 
 
 @asynccontextmanager
@@ -86,6 +86,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # Registro de rutas
 # ---------------------------------------------------------------------------
 app.include_router(producto_router.router)
+app.include_router(seed_router.router)
 
 
 @app.get("/", tags=["Root"])

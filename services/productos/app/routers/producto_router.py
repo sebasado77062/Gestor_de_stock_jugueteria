@@ -8,11 +8,17 @@ from typing import List
 from app.database.db import get_db
 from app.schemas.producto import ProductoCreate, ProductoUpdate, ProductoOut
 from app.services import producto_service
+from app.core.jwt_auth import requerir_rol
 
 router = APIRouter(prefix="/api/v1/productos", tags=["Productos"])
 
 
-@router.get("", response_model=List[ProductoOut], status_code=status.HTTP_200_OK)
+@router.get(
+    "",
+    response_model=List[ProductoOut],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+)
 def listar_productos(
     incluir_inactivos: bool = Query(
         False,
@@ -25,11 +31,19 @@ def listar_productos(
 
     Por defecto solo devuelve productos activos. Usar
     ?incluir_inactivos=true para ver también los dados de baja.
+
+    Requiere autenticación (admin o empleado). Ver services/auth para el
+    login y app/core/jwt_auth.py para el mecanismo de validación del JWT.
     """
     return producto_service.obtener_productos(db, incluir_inactivos=incluir_inactivos)
 
 
-@router.get("/{id_producto}", response_model=ProductoOut, status_code=status.HTTP_200_OK)
+@router.get(
+    "/{id_producto}",
+    response_model=ProductoOut,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+)
 def obtener_producto(id_producto: int, db: Session = Depends(get_db)):
     """
     GET /api/v1/productos/{id} -> 200 OK o 404 Not Found.
@@ -46,7 +60,12 @@ def obtener_producto(id_producto: int, db: Session = Depends(get_db)):
     return producto
 
 
-@router.post("", response_model=ProductoOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ProductoOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+)
 def crear_producto(producto: ProductoCreate, db: Session = Depends(get_db)):
     """
     POST /api/v1/productos -> 201 Created.
@@ -54,7 +73,12 @@ def crear_producto(producto: ProductoCreate, db: Session = Depends(get_db)):
     return producto_service.crear_producto(db, producto)
 
 
-@router.put("/{id_producto}", response_model=ProductoOut, status_code=status.HTTP_200_OK)
+@router.put(
+    "/{id_producto}",
+    response_model=ProductoOut,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+)
 def actualizar_producto(id_producto: int, producto: ProductoUpdate, db: Session = Depends(get_db)):
     """
     PUT /api/v1/productos/{id} -> 200 OK o 404 Not Found.
@@ -73,10 +97,18 @@ def actualizar_producto(id_producto: int, producto: ProductoUpdate, db: Session 
     return actualizado
 
 
-@router.delete("/{id_producto}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{id_producto}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(requerir_rol("admin"))],
+)
 def eliminar_producto(id_producto: int, response: Response, db: Session = Depends(get_db)):
     """
     DELETE /api/v1/productos/{id}.
+
+    Solo accesible por admin (issue #7): dar de baja o eliminar un
+    producto es una decisión más sensible que crearlo o editarlo, así que
+    se restringe más que el resto del CRUD.
 
     Comportamiento (issue #6):
     - 204 No Content: el producto no tenía movimientos asociados y se
@@ -101,3 +133,4 @@ def eliminar_producto(id_producto: int, response: Response, db: Session = Depend
         return ProductoOut.model_validate(eliminado)
 
     return None
+
