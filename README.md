@@ -13,6 +13,7 @@ nginx.
 ├── docs/
 │   └── ARQUITECTURA.md   # Diagramas (servicios, capas, flujo de baja lógica)
 ├── services/
+│   ├── auth/              # Login, JWT (access/refresh), roles y usuarios (FastAPI + SQLite + Redis)
 │   ├── productos/         # API REST del CRUD de Producto (FastAPI + SQLite)
 │   └── movimientos/       # Placeholder: aún no implementado (ver su README)
 └── frontend/               # Panel de administración estático, servido con nginx
@@ -40,6 +41,9 @@ docker compose up --build
 
 Esto va a:
 
+0. Levantar Redis y el servicio `auth` (`http://localhost:8001`), que crea los
+   usuarios de prueba (ver más abajo), y luego `productos`, que valida los JWT
+   emitidos por `auth`.
 1. Construir la imagen del servicio `productos` (Python 3.12 + FastAPI) e
    iniciarlo en `http://localhost:8000`, esperando a que su healthcheck
    (`GET /health`) esté en estado saludable.
@@ -64,10 +68,31 @@ Para bajar todo y borrar también los datos persistidos (empezar 100% limpio):
 docker compose down -v
 ```
 
+## Usuarios y acceso rápido (entorno de pruebas)
+
+Con `HABILITAR_USUARIOS_PRUEBA=true` (valor por defecto en `.env.example`),
+`auth` crea estos dos usuarios al arrancar, y la pantalla de login del
+frontend muestra un botón de **acceso rápido** por rol:
+
+| Rol        | Email               | Contraseña     | Permisos                                                      |
+|------------|---------------------|----------------|---------------------------------------------------------------|
+| `admin`    | `admin@test.com`    | `admin12345`   | Todo: productos (incluido eliminar) y gestión de usuarios.     |
+| `empleado` | `empleado@test.com` | `empleado123`  | Ver/crear/editar productos. No puede eliminar ni gestionar usuarios. |
+
+Los valores salen de `PRUEBA_ADMIN_*` y `PRUEBA_EMPLEADO_*` en `.env`. Para
+un entorno real, poner `HABILITAR_USUARIOS_PRUEBA=false`: no se crean los
+usuarios y el frontend deja de recibir las credenciales. Opcionalmente se
+puede definir un admin propio con `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD`
+(se crea solo si la base de usuarios está vacía).
+
+> Si cambiás las contraseñas de prueba en `.env` con una base ya creada, el
+> usuario existente conserva la anterior: `docker compose down -v` para
+> empezar de cero.
+
 ## Variables de entorno
 
-Ver `.env.example` para el detalle de cada variable. Ninguna contiene
-secretos: el proyecto no usa credenciales externas por ahora. El archivo
+Ver `.env.example` para el detalle de cada variable. `AUTH_SECRET_KEY` (firma
+de los JWT) es obligatoria; el valor de `.env.example` es solo para desarrollo. El archivo
 `.env` real (con los valores que cada quien use localmente) **no se sube al
 repositorio** (ver `.gitignore`).
 
@@ -86,6 +111,14 @@ docker compose exec productos python seed_data.py
 
 ## Desarrollo local sin Docker (opcional)
 
+**Windows, sin instalar Redis:** `.\ejecutar_local.ps1` (desde PowerShell, en
+la raíz del proyecto) crea los entornos virtuales, instala dependencias y
+levanta `auth`, `productos` y el frontend, usando un Redis en memoria
+(`REDIS_URL=memory://`, vía `fakeredis`). Solo para probar: el logout no
+invalida el token en `productos`. Abre `http://localhost:8080`.
+
+Alternativa manual (requiere un Redis real):
+
 Si se prefiere correr el backend directamente con Python:
 
 ```bash
@@ -100,7 +133,10 @@ Por defecto usa `sqlite:///./data/jugueteria.db` dentro de esa misma carpeta
 (también ignorado por Git). Para abrir el frontend en este modo, basta con
 abrir `frontend/index.html` directamente en el navegador: sin `config.js`
 generado por Docker, `app.js` cae automáticamente a
-`http://localhost:8000` como URL de la API.
+`http://localhost:8000` como URL de la API (y `http://localhost:8001` para
+auth). En ese modo no hay `config.js`, así que los botones de acceso rápido no
+aparecen: hay que iniciar sesión con email y contraseña, y `auth` + Redis
+tienen que estar corriendo.
 
 ## Estado de `services/movimientos`
 
@@ -129,7 +165,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-La suite (31 tests) cubre CRUD, validaciones de entrada, la baja lógica de
+La suite (38 tests) cubre CRUD, validaciones de entrada, la baja lógica de
 productos y flujos de integración de punta a punta. Corre contra una base
 SQLite en memoria aislada por test — no requiere Docker ni toca la base de
 datos real. Ver el detalle de qué cubre cada archivo en

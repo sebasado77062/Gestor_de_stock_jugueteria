@@ -51,6 +51,21 @@ def crear_producto(db: Session, producto: ProductoCreate):
     return nuevo_producto
 
 
+def crear_productos_masivo(db: Session, productos: list[ProductoCreate]):
+    """
+    Inserta varios productos en un único commit (usado por el endpoint de
+    seed de datos de prueba, ver app/routers/seed_router.py). Evitar un
+    commit por producto es más eficiente y, si algo falla a mitad de la
+    carga, no deja registros parciales confirmados.
+    """
+    nuevos = [Producto(**p.model_dump()) for p in productos]
+    db.add_all(nuevos)
+    db.commit()
+    for producto_db in nuevos:
+        db.refresh(producto_db)
+    return nuevos
+
+
 def actualizar_producto(db: Session, id_producto: int, datos: ProductoUpdate):
     """
     RF04: Modificar los datos descriptivos de un producto existente.

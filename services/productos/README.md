@@ -28,6 +28,7 @@ Documentación interactiva: `http://localhost:8000/docs`.
 | PUT | `/api/v1/productos/{id}` | Actualiza datos descriptivos. **No acepta `stock_actual`** (ver más abajo). |
 | DELETE | `/api/v1/productos/{id}` | Elimina o da de baja según tenga movimientos asociados (ver más abajo). |
 | GET | `/health` | Healthcheck. |
+| POST | `/api/v1/dev/seed-productos?cantidad=N` | Genera N productos de prueba con datos aleatorios (1-200, default 20). Solo desarrollo, ver más abajo. |
 
 El contrato completo está exportado en [`openapi.json`](./openapi.json)
 (regenerarlo con `python export_openapi.py` tras cualquier cambio de
@@ -91,6 +92,28 @@ resulta en borrado físico. El punto de integración ya está aislado en esa
 real (vía su API REST, según el patrón de comunicación decidido para el
 proyecto) sin tener que tocar el router ni el resto del servicio.
 
+## Datos de prueba (`/api/v1/dev/seed-productos`)
+
+Endpoint de utilidad para poblar rápido el inventario con productos
+variados (nombre, marca, categoría, precio y stock generados
+aleatoriamente dentro de rangos razonables) mientras se prueba la app —
+por ejemplo, para ver el listado con muchos registros o el indicador de
+"stock bajo" con datos reales. Se dispara desde el botón **"🎲 Cargar
+datos de prueba"** en el panel del frontend, junto al título del
+inventario.
+
+- `POST /api/v1/dev/seed-productos?cantidad=N` (1 a 200, default 20).
+- Agrega productos al inventario existente, no lo reemplaza ni lo limpia.
+- No forma parte del CRUD de negocio de Producto (vive en un router
+  aparte, `app/routers/seed_router.py`), y se puede deshabilitar con la
+  variable de entorno `HABILITAR_SEED_ENDPOINT=false` (ver
+  `.env.example`) para no exponerlo en un entorno que no sea de
+  desarrollo/pruebas.
+- El script `seed_data.py` (5 productos fijos, pensado para una demo
+  puntual) se mantiene sin cambios y sigue siendo válido para ese uso;
+  este endpoint es el complemento para generar volumen variable de datos
+  desde la propia interfaz, sin tocar la terminal.
+
 ## Persistencia
 
 SQLite mediante SQLAlchemy, con la URL de conexión configurable por la
@@ -143,6 +166,8 @@ La suite cubre:
   intente enviarlo.
 - **Baja lógica** (`tests/test_baja_logica_productos.py`): comportamiento
   de `DELETE` con y sin movimientos simulados, filtro `incluir_inactivos`.
+- **Datos de prueba** (`tests/test_seed_productos.py`): generación de
+  lotes, límites de cantidad (1-200), y el flag `HABILITAR_SEED_ENDPOINT`.
 - **Integración** (`tests/test_integracion.py`): flujos completos
   encadenados (crear → editar → listar → eliminar) y healthcheck.
 

@@ -233,6 +233,77 @@
     font-weight: 400;
     color: #a89fbb;
   }
+
+  .encabezado-inventario{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    flex-wrap:wrap;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .acciones-dev{
+    display:flex;
+    align-items:center;
+    gap: 8px;
+  }
+
+  .etiqueta-inline{
+    font-size: 12px;
+    color:#8a8299;
+  }
+
+  #cantidad-seed{
+    width: 64px;
+    padding: 8px 10px;
+    border-radius: 999px;
+    border: 2px solid var(--linea);
+    font-family:'Fredoka', sans-serif;
+    text-align:center;
+  }
+
+  /* --- Login / sesión --- */
+  .login-wrap{ max-width: 460px; margin: 0 auto; padding: 40px 24px 80px; }
+  .login-wrap .campo-login{ display:flex; flex-direction:column; gap:14px; }
+  .acceso-rapido{
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 2px dashed var(--linea);
+  }
+  .acceso-rapido h3{
+    font-family:'Fredoka', sans-serif;
+    font-size: 14px;
+    margin: 0 0 4px;
+  }
+  .acceso-rapido p{ margin: 0 0 12px; font-size: 12px; color:#8a8299; }
+  .acceso-rapido .fila{ display:flex; gap:10px; flex-wrap:wrap; }
+  .btn-rol{
+    flex:1 1 180px;
+    display:flex;
+    flex-direction:column;
+    align-items:flex-start;
+    gap:3px;
+    text-align:left;
+    border-radius: 16px;
+    padding: 10px 14px;
+    background:#fff;
+    color: var(--tinta);
+  }
+  .btn-rol small{
+    font-family:'Karla', sans-serif;
+    font-weight:400;
+    font-size: 11px;
+    color:#6b6280;
+    word-break: break-all;
+  }
+  .btn-rol.admin{ background: var(--amarillo); }
+  .btn-rol.empleado{ background: var(--turquesa); color:#fff; }
+  .btn-rol.empleado small{ color:#e6fafa; }
+  .usuario-actual{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .usuario-actual .nombre{ font-size: 13px; font-weight:700; }
+  .rol-admin{ background: var(--amarillo); color: var(--tinta); }
+  .rol-empleado{ background: #D9F3F3; color: #0E6E71; }
 </style>
 </head>
 <body>
@@ -240,14 +311,56 @@
 <header>
   <div>
     <h1>Mundo Juguetes <span>· Stock</span></h1>
-    <p>Panel interno de control de inventario — CRUD de Producto (AE1)</p>
+    <p>Panel interno de control de inventario — CRUD de Producto</p>
   </div>
-  <div>
+  <div class="usuario-actual">
     <span id="indicador-conexion" class="etiqueta stock-bajo">Verificando API…</span>
+    <span id="info-usuario" style="display:none;">
+      <span class="nombre" id="usuario-nombre"></span>
+      <span class="etiqueta" id="usuario-rol"></span>
+    </span>
+    <button type="button" id="btn-logout" class="btn-secundario btn-chico" style="display:none;">Cerrar sesión</button>
   </div>
 </header>
 
-<main>
+<!-- Pantalla de login: visible mientras no haya sesión iniciada -->
+<div id="pantalla-login" class="login-wrap" style="display:none;">
+  <section class="panel">
+    <h2>🔐 Iniciar sesión</h2>
+    <div id="login-error" class="estado"></div>
+    <form id="form-login">
+      <div class="campo-login">
+        <label>Email
+          <input type="email" id="login-email" required autocomplete="username" placeholder="tu@email.com">
+        </label>
+        <label>Contraseña
+          <input type="password" id="login-password" required autocomplete="current-password" placeholder="••••••••">
+        </label>
+      </div>
+      <div class="acciones-form">
+        <button type="submit" class="btn-primario" id="btn-login">Ingresar</button>
+      </div>
+    </form>
+
+    <!-- Solo se muestra si HABILITAR_USUARIOS_PRUEBA=true (ver config.js) -->
+    <div id="acceso-rapido" class="acceso-rapido" style="display:none;">
+      <h3>⚡ Acceso rápido — entorno de pruebas</h3>
+      <p>Entrá con un clic con cada rol. Solo disponible en desarrollo.</p>
+      <div class="fila">
+        <button type="button" class="btn-rol admin" id="btn-rapido-admin">
+          👑 Entrar como Admin
+          <small id="cred-admin"></small>
+        </button>
+        <button type="button" class="btn-rol empleado" id="btn-rapido-empleado">
+          🧸 Entrar como Empleado
+          <small id="cred-empleado"></small>
+        </button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<main id="app-principal" style="display:none;">
 
   <div id="estado-global" class="estado"></div>
 
@@ -287,7 +400,14 @@
   </section>
 
   <section class="panel">
-    <h2>📦 Inventario</h2>
+    <div class="encabezado-inventario">
+      <h2>📦 Inventario</h2>
+      <div class="acciones-dev">
+        <label class="etiqueta-inline" for="cantidad-seed">Cantidad</label>
+        <input type="number" id="cantidad-seed" min="1" max="200" value="20" title="Cantidad de productos de prueba a generar (1-200)">
+        <button type="button" id="btn-seed" class="btn-secundario">🎲 Cargar datos de prueba</button>
+      </div>
+    </div>
     <table>
       <thead>
         <tr>
@@ -316,7 +436,7 @@
 
 </main>
 
-<footer>Sistema de Gestión de Stock — Juguetería · Actividad Evaluativa 1</footer>
+<footer>Sistema de Gestión de Stock — Juguetería</footer>
 
 <script src="config.js"></script>
 <script src="app.js"></script>

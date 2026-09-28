@@ -1,0 +1,13 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+sqlalchemy==2.0.36
+pydantic==2.10.3
+pydantic[email]==2.10.3
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+# passlib 1.7.4 es incompatible con bcrypt>=5.0 (rompe con
+# "password cannot be longer than 72 bytes" incluso en passwords cortos,
+# por un cambio de API en el paquete bcrypt). Se fija una versión de
+# bcrypt conocida como compatible.
+bcrypt==4.2.1
+redis==5.2.1
