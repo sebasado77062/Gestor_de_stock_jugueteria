@@ -1,4 +1,46 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: jugueteria-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  auth:
+    build:
+      context: ./services/auth
+    container_name: jugueteria-auth
+    restart: unless-stopped
+    environment:
+      # Secreto compartido con productos para firmar/validar los JWT.
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: ${AUTH_DATABASE_URL:-sqlite:////app/data/auth.db}
+      AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-}
+      # Usuarios de prueba (solo entorno de desarrollo, ver .env.example)
+      HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
+      PRUEBA_ADMIN_EMAIL: ${PRUEBA_ADMIN_EMAIL:-admin@test.com}
+      PRUEBA_ADMIN_PASSWORD: ${PRUEBA_ADMIN_PASSWORD:-admin12345}
+      PRUEBA_EMPLEADO_EMAIL: ${PRUEBA_EMPLEADO_EMAIL:-empleado@test.com}
+      PRUEBA_EMPLEADO_PASSWORD: ${PRUEBA_EMPLEADO_PASSWORD:-empleado123}
+    volumes:
+      - auth_data:/app/data
+    ports:
+      - "${AUTH_PORT:-8001}:8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
   productos:
     build:
       context: ./services/productos
@@ -6,12 +48,20 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${PRODUCTOS_DATABASE_URL:-sqlite:////app/data/jugueteria.db}
+      HABILITAR_SEED_ENDPOINT: ${HABILITAR_SEED_ENDPOINT:-true}
+      # Mismo secreto y mismo Redis que auth: productos valida el JWT
+      # localmente y consulta la blacklist de tokens revocados.
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
+      REDIS_URL: redis://redis:6379/0
     volumes:
       # Persiste la base de datos SQLite fuera del contenedor. El archivo
       # jugueteria.db vive solo en este volumen: nunca se versiona en el repo.
       - productos_data:/app/data
     ports:
       - "${PRODUCTOS_PORT:-8000}:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -25,15 +75,26 @@ services:
     container_name: jugueteria-frontend
     restart: unless-stopped
     environment:
-      # URL desde la que el NAVEGADOR del usuario llega a la API. Con
-      # `docker compose up` en un solo host, se accede vía el puerto
-      # publicado en el host (no el nombre de servicio interno "productos",
-      # que solo resuelve entre contenedores).
+      # URLs desde las que el NAVEGADOR del usuario llega a las APIs. Con
+      # `docker compose up` en un solo host, se accede vía los puertos
+      # publicados en el host (no los nombres de servicio internos, que
+      # solo resuelven entre contenedores).
       PRODUCTOS_API_URL: ${PRODUCTOS_API_URL:-http://localhost:8000}
+      AUTH_API_URL: ${AUTH_API_URL:-http://localhost:8001}
+      # Botones de "acceso rápido" por rol (solo entorno de desarrollo).
+      # Si HABILITAR_USUARIOS_PRUEBA no es "true", el entrypoint vacía las
+      # credenciales en config.js y los botones no se muestran.
+      HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
+      PRUEBA_ADMIN_EMAIL: ${PRUEBA_ADMIN_EMAIL:-admin@test.com}
+      PRUEBA_ADMIN_PASSWORD: ${PRUEBA_ADMIN_PASSWORD:-admin12345}
+      PRUEBA_EMPLEADO_EMAIL: ${PRUEBA_EMPLEADO_EMAIL:-empleado@test.com}
+      PRUEBA_EMPLEADO_PASSWORD: ${PRUEBA_EMPLEADO_PASSWORD:-empleado123}
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     depends_on:
       productos:
+        condition: service_healthy
+      auth:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
@@ -44,3 +105,4 @@ services:
 
 volumes:
   productos_data:
+  auth_data:
