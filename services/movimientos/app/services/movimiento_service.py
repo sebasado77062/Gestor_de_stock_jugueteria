@@ -6,9 +6,7 @@ servicio de Productos (que es la fuente de verdad del stock) y, solo si
 ese ajuste fue aceptado, persiste el movimiento como registro histórico.
 
 Autenticación: todas las funciones que hablan con Productos reciben el
-token JWT del usuario original y lo propagan al cliente HTTP. Movimientos
-no emite ni valida roles por su cuenta más allá de exigir que haya un
-usuario autenticado (ver app/core/jwt_auth.py).
+token JWT del usuario original y lo propagan al cliente HTTP.
 """
 from sqlalchemy.orm import Session
 
@@ -27,19 +25,24 @@ def _calcular_delta(categoria: str, cantidad: int) -> int:
     return cantidad
 
 
-def registrar_movimiento(db: Session, datos: MovimientoCreate, token: str) -> Movimiento:
+def registrar_movimiento(db: Session, datos: MovimientoCreate, token: str) -> tuple[Movimiento, dict]:
     """
     Registra un movimiento de stock.
 
     1) Ajusta el stock en Productos de forma atómica, reenviando el token
-       del usuario (puede levantar ProductosClientError: 401 si venció la
-       sesión, 403 si el rol no alcanza, 404 si no existe el producto, 409
-       si no hay stock suficiente, 503/502 si Productos no responde).
+       del usuario (puede levantar ProductosClientError: 401/403 si el token
+       no sirve, 404 si no existe el producto, 409 si no hay stock suficiente,
+       503/502 si Productos no responde).
     2) Solo si ese ajuste fue aceptado, se persiste el movimiento.
+
+    Devuelve una tupla (movimiento, producto_actualizado). El producto
+    actualizado (con stock_actual y stock_minimo vigentes) se publica en el
+    evento para que el worker de alertas lo use sin necesidad de llamar a
+    Productos (que exige JWT y el worker no tiene token de usuario).
     """
     delta = _calcular_delta(datos.categoria_movimiento, datos.cantidad_movida)
 
-    productos_client.ajustar_stock(datos.id_producto, delta, token)
+    producto_actualizado = productos_client.ajustar_stock(datos.id_producto, delta, token)
 
     nuevo = Movimiento(
         categoria_movimiento=datos.categoria_movimiento,
@@ -51,15 +54,10 @@ def registrar_movimiento(db: Session, datos: MovimientoCreate, token: str) -> Mo
     db.add(nuevo)
     db.commit()
     db.refresh(nuevo)
-    return nuevo
-
+    return nuevo, producto_actualizado
 
 def obtener_producto(id_producto: int, token: str) -> dict:
-    """
-    Consulta el producto en el servicio de Productos (proxy autenticado).
-    Usado por el router para validar que el producto exista antes de
-    mostrarlo o antes de aceptar ciertas operaciones.
-    """
+    """Consulta el producto en el servicio de Productos (proxy autenticado)."""
     return productos_client.obtener_producto(id_producto, token)
 
 

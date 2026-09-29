@@ -2,9 +2,9 @@
 Tests del servicio de Movimientos: registro básico, cálculo de delta por
 categoría, y propagación de errores del servicio de Productos.
 
-No requieren Productos, Redis ni RabbitMQ corriendo: se mockea el cliente
-HTTP (app.clients.productos_client) y se pasa un token de prueba ficticio
-(el service no valida el token, solo lo propaga al cliente).
+No requieren Productos, Redis ni RabbitMQ corriendo: se mockean el cliente
+HTTP y el publicador de eventos. El token de prueba es ficticio (el service
+no lo valida, solo lo propaga).
 """
 import os
 import tempfile
