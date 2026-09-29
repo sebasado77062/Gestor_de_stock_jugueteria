@@ -1,0 +1,367 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API - Servicio de Movimientos de Stock",
+    "description": "AE1/AE2 - Registro de movimientos (venta, ingreso, estropeo, devolución)",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/movimientos": {
+      "post": {
+        "tags": [
+          "Movimientos"
+        ],
+        "summary": "Crear Movimiento",
+        "description": "POST /api/v1/movimientos -> 201 Created.\n\nRequiere usuario autenticado (cualquier rol). El token se reenvía a\nProductos para que aplique sus reglas de rol (admin o empleado).\n\nSi se envía el header Idempotency-Key y ya existe un movimiento\nregistrado con esa misma clave, se devuelve ese movimiento sin volver a\najustar el stock ni crear un registro duplicado.",
+        "operationId": "crear_movimiento_api_v1_movimientos_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MovimientoCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovimientoOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Movimientos"
+        ],
+        "summary": "Listar Movimientos",
+        "description": "GET /api/v1/movimientos -> 200 OK con el listado completo (más reciente primero).",
+        "operationId": "listar_movimientos_api_v1_movimientos_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MovimientoOut"
+                  },
+                  "title": "Response Listar Movimientos Api V1 Movimientos Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/productos/{id_producto}/movimientos": {
+      "get": {
+        "tags": [
+          "Movimientos"
+        ],
+        "summary": "Listar Movimientos De Producto",
+        "description": "GET /api/v1/productos/{id}/movimientos -> 200 OK con los movimientos de ese producto.",
+        "operationId": "listar_movimientos_de_producto_api_v1_productos__id_producto__movimientos_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id_producto",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Producto"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MovimientoOut"
+                  },
+                  "title": "Response Listar Movimientos De Producto Api V1 Productos  Id Producto  Movimientos Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "tags": [
+          "Root"
+        ],
+        "summary": "Root",
+        "description": "Endpoint raíz simple para verificar que el servidor está activo.",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Root"
+        ],
+        "summary": "Health",
+        "description": "Healthcheck simple para el orquestador (Docker healthcheck, ver docker-compose.yml).",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "MovimientoCreate": {
+        "properties": {
+          "categoria_movimiento": {
+            "type": "string",
+            "enum": [
+              "venta",
+              "ingreso",
+              "estropeo",
+              "devolucion"
+            ],
+            "title": "Categoria Movimiento",
+            "description": "venta | ingreso | estropeo | devolucion"
+          },
+          "cantidad_movida": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Cantidad Movida",
+            "description": "Cantidad movida, siempre positiva; el signo lo define la categoría"
+          },
+          "id_producto": {
+            "type": "integer",
+            "title": "Id Producto",
+            "description": "ID del producto afectado (servicio de Productos)"
+          },
+          "dni_cliente": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dni Cliente"
+          },
+          "dni_empleado": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dni Empleado"
+          }
+        },
+        "type": "object",
+        "required": [
+          "categoria_movimiento",
+          "cantidad_movida",
+          "id_producto"
+        ],
+        "title": "MovimientoCreate",
+        "description": "Schema usado en el POST /api/v1/movimientos (única forma de crear un movimiento)."
+      },
+      "MovimientoOut": {
+        "properties": {
+          "id_movimiento": {
+            "type": "integer",
+            "title": "Id Movimiento"
+          },
+          "fecha_hora": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fecha Hora"
+          },
+          "categoria_movimiento": {
+            "type": "string",
+            "title": "Categoria Movimiento"
+          },
+          "cantidad_movida": {
+            "type": "integer",
+            "title": "Cantidad Movida"
+          },
+          "id_producto": {
+            "type": "integer",
+            "title": "Id Producto"
+          },
+          "dni_cliente": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dni Cliente"
+          },
+          "dni_empleado": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dni Empleado"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id_movimiento",
+          "fecha_hora",
+          "categoria_movimiento",
+          "cantidad_movida",
+          "id_producto"
+        ],
+        "title": "MovimientoOut",
+        "description": "Schema de salida: lo que la API devuelve al cliente."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

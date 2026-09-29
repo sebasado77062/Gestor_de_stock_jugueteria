@@ -50,3 +50,17 @@ class ProductoOut(ProductoBase):
     activo: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AjusteStockIn(BaseModel):
+    """
+    Schema de entrada para PATCH /api/v1/productos/{id}/ajustar-stock.
+
+    delta positivo -> incrementa el stock (ingreso, devolución).
+    delta negativo -> intenta decrementar el stock (venta, estropeo); si no
+    hay stock suficiente, el ajuste se rechaza de forma atómica.
+    """
+    delta: int = Field(
+        ...,
+        description="Cantidad a sumar (positivo) o restar (negativo) del stock_actual",
+    )

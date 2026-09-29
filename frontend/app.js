@@ -466,4 +466,40 @@ async function cargarDatosDePrueba() {
 
 btnSeed.addEventListener("click", cargarDatosDePrueba);
 
+
+// --- Restricciones de entrada en formularios ---
+// HTML5 input[type=number] acepta "e", "E", "+", "-" y "." porque son
+// válidos en notación científica (1e5, -1.5). En un inventario no tienen
+// sentido, así que los bloqueamos a nivel de teclado y pegado.
+
+function restringirInputNumerico(input, { permitirDecimal = false } = {}) {
+  if (!input) return;
+  const teclasBloqueadas = ["e", "E", "+", "-"];
+  if (!permitirDecimal) teclasBloqueadas.push(".");
+  input.addEventListener("keydown", (evento) => {
+    if (teclasBloqueadas.includes(evento.key)) evento.preventDefault();
+  });
+  input.addEventListener("paste", (evento) => {
+    const texto = (evento.clipboardData || window.clipboardData).getData("text");
+    const patron = permitirDecimal ? /^[0-9]*\.?[0-9]*$/ : /^[0-9]*$/;
+    if (!patron.test(texto)) evento.preventDefault();
+  });
+}
+
+// Los DNI son 8 dígitos numéricos: se filtra todo lo que no sea dígito
+// y se limita a 8 caracteres.
+function restringirInputDni(input) {
+  if (!input) return;
+  input.addEventListener("input", () => {
+    input.value = input.value.replace(/\D/g, "").slice(0, 8);
+  });
+}
+
+// Aplicar restricciones a los inputs del formulario de productos.
+restringirInputNumerico(campoPrecio, { permitirDecimal: true });
+restringirInputNumerico(campoStockActual);
+restringirInputNumerico(campoStockMinimo);
+restringirInputNumerico(campoCantidadSeed);
+
+
 restaurarSesion();

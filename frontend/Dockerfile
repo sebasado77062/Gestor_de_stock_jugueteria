@@ -5,6 +5,7 @@ FROM nginx:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY index.html /usr/share/nginx/html/index.html
 COPY app.js /usr/share/nginx/html/app.js
+COPY movimientos.js /usr/share/nginx/html/movimientos.js
 COPY config.js.template /usr/share/nginx/html/config.js.template
 
 # Entrypoint que genera config.js con la URL de la API en runtime

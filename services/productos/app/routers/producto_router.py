@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.database.db import get_db
-from app.schemas.producto import ProductoCreate, ProductoUpdate, ProductoOut
+from app.schemas.producto import ProductoCreate, ProductoUpdate, ProductoOut, AjusteStockIn
 from app.services import producto_service
 from app.core.jwt_auth import requerir_rol
 
@@ -134,3 +134,36 @@ def eliminar_producto(id_producto: int, response: Response, db: Session = Depend
 
     return None
 
+
+@router.patch(
+    "/{id_producto}/ajustar-stock",
+    response_model=ProductoOut,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+)
+def ajustar_stock(id_producto: int, ajuste: AjusteStockIn, db: Session = Depends(get_db)):
+    """
+    PATCH /api/v1/productos/{id}/ajustar-stock -> 200 OK, 404 Not Found o 409 Conflict.
+
+    Endpoint consumido por el servicio de Movimientos para reflejar ventas,
+    ingresos, estropeos y devoluciones. El ajuste se aplica de forma atómica
+    (ver producto_service.ajustar_stock_atomico), por lo que es seguro ante
+    llamadas concurrentes: nunca deja stock_actual negativo.
+
+    Requiere rol admin o empleado, igual que el resto de los endpoints de
+    escritura. El servicio de Movimientos reenvía el JWT del usuario que
+    originó el movimiento.
+    """
+    resultado = producto_service.ajustar_stock_atomico(db, id_producto, ajuste.delta)
+
+    if resultado is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No se encontró un producto con id_producto={id_producto}.",
+        )
+    if resultado == "sin_stock":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stock insuficiente para realizar el ajuste solicitado.",
+        )
+    return producto_service.obtener_producto_por_id(db, id_producto)

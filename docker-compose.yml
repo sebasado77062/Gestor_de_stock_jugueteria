@@ -9,19 +9,36 @@ services:
       timeout: 3s
       retries: 5
 
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: jugueteria-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-admin123}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   auth:
     build:
       context: ./services/auth
     container_name: jugueteria-auth
     restart: unless-stopped
     environment:
-      # Secreto compartido con productos para firmar/validar los JWT.
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: ${AUTH_DATABASE_URL:-sqlite:////app/data/auth.db}
       AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-}
       AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-}
-      # Usuarios de prueba (solo entorno de desarrollo, ver .env.example)
       HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
       PRUEBA_ADMIN_EMAIL: ${PRUEBA_ADMIN_EMAIL:-admin@test.com}
       PRUEBA_ADMIN_PASSWORD: ${PRUEBA_ADMIN_PASSWORD:-admin12345}
@@ -49,13 +66,9 @@ services:
     environment:
       DATABASE_URL: ${PRODUCTOS_DATABASE_URL:-sqlite:////app/data/jugueteria.db}
       HABILITAR_SEED_ENDPOINT: ${HABILITAR_SEED_ENDPOINT:-true}
-      # Mismo secreto y mismo Redis que auth: productos valida el JWT
-      # localmente y consulta la blacklist de tokens revocados.
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
     volumes:
-      # Persiste la base de datos SQLite fuera del contenedor. El archivo
-      # jugueteria.db vive solo en este volumen: nunca se versiona en el repo.
       - productos_data:/app/data
     ports:
       - "${PRODUCTOS_PORT:-8000}:8000"
@@ -69,21 +82,62 @@ services:
       retries: 5
       start_period: 10s
 
+  movimientos:
+    build:
+      context: ./services/movimientos
+    container_name: jugueteria-movimientos
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${MOVIMIENTOS_DATABASE_URL:-sqlite:////app/data/movimientos.db}
+      PRODUCTOS_SERVICE_URL: http://productos:8000
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS:-admin123}@rabbitmq:5672/
+    volumes:
+      - movimientos_data:/app/data
+    ports:
+      - "${MOVIMIENTOS_PORT:-8002}:8000"
+    depends_on:
+      productos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  worker-alertas:
+    build:
+      context: ./services/worker-alertas
+    container_name: jugueteria-worker-alertas
+    restart: unless-stopped
+    environment:
+      PRODUCTOS_SERVICE_URL: http://productos:8000
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS:-admin123}@rabbitmq:5672/
+    volumes:
+      - alertas_data:/app/data
+    depends_on:
+      productos:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      # No es un servicio HTTP: no tiene healthcheck propio, se verifica
+      # por logs (docker compose logs -f worker-alertas).
+
   frontend:
     build:
       context: ./frontend
     container_name: jugueteria-frontend
     restart: unless-stopped
     environment:
-      # URLs desde las que el NAVEGADOR del usuario llega a las APIs. Con
-      # `docker compose up` en un solo host, se accede vía los puertos
-      # publicados en el host (no los nombres de servicio internos, que
-      # solo resuelven entre contenedores).
       PRODUCTOS_API_URL: ${PRODUCTOS_API_URL:-http://localhost:8000}
       AUTH_API_URL: ${AUTH_API_URL:-http://localhost:8001}
-      # Botones de "acceso rápido" por rol (solo entorno de desarrollo).
-      # Si HABILITAR_USUARIOS_PRUEBA no es "true", el entrypoint vacía las
-      # credenciales en config.js y los botones no se muestran.
+      MOVIMIENTOS_API_URL: ${MOVIMIENTOS_API_URL:-http://localhost:8002}
       HABILITAR_USUARIOS_PRUEBA: ${HABILITAR_USUARIOS_PRUEBA:-true}
       PRUEBA_ADMIN_EMAIL: ${PRUEBA_ADMIN_EMAIL:-admin@test.com}
       PRUEBA_ADMIN_PASSWORD: ${PRUEBA_ADMIN_PASSWORD:-admin12345}
@@ -94,10 +148,12 @@ services:
     depends_on:
       productos:
         condition: service_healthy
+      movimientos:
+        condition: service_healthy
       auth:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -105,4 +161,8 @@ services:
 
 volumes:
   productos_data:
+  movimientos_data:
   auth_data:
+  redis_data:
+  rabbitmq_data:
+  alertas_data:
