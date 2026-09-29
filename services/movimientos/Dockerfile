@@ -19,6 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar el código de la aplicación
 COPY app ./app
 
+COPY export_openapi.py .
+
 # Carpeta para la base de datos SQLite (se monta como volumen en compose)
 RUN mkdir -p /app/data
 
