@@ -304,6 +304,41 @@
   .usuario-actual .nombre{ font-size: 13px; font-weight:700; }
   .rol-admin{ background: var(--amarillo); color: var(--tinta); }
   .rol-empleado{ background: #D9F3F3; color: #0E6E71; }
+  
+  /* --- Tabs (Inventario / Movimientos) --- */
+  .tabs{
+    display:flex;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .tab-btn{
+    background:#fff;
+    color: var(--tinta);
+    border: 2px solid var(--tinta);
+    border-radius: 999px;
+    padding: 9px 18px;
+    font-family:'Fredoka', sans-serif;
+    font-weight:600;
+    font-size: 14px;
+    cursor:pointer;
+  }
+  .tab-btn.activo{
+    background: var(--tinta);
+    color:#fff;
+  }
+  .vista{ display:none; }
+  .vista.activa{ display:block; }
+
+  /* --- Badges de categoría de movimiento --- */
+  .badge-categoria{
+    display:inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .badge-venta, .badge-estropeo{ background: var(--danger-bg); color: var(--danger-fg); }
+  .badge-ingreso, .badge-devolucion{ background: var(--ok-bg); color: var(--ok-fg); }
 </style>
 </head>
 <body>
@@ -364,6 +399,13 @@
 
   <div id="estado-global" class="estado"></div>
 
+  <div class="tabs">
+    <button type="button" class="tab-btn activo" id="tab-btn-productos">📦 Inventario</button>
+    <button type="button" class="tab-btn" id="tab-btn-movimientos">🔄 Movimientos</button>
+  </div>
+
+  <div id="vista-productos" class="vista activa">
+
   <section class="panel">
     <h2 id="titulo-form">➕ Nuevo producto</h2>
     <form id="form-producto">
@@ -379,16 +421,16 @@
           <input type="text" id="categoria" maxlength="60" placeholder="Ej: Peluches">
         </label>
         <label>Precio de venta ($)
-          <input type="number" id="precio_venta" step="0.01" min="0" required placeholder="0.00">
+          <input type="number" id="precio_venta" step="0.01" min="0" required placeholder="0.00" inputmode="decimal">
         </label>
         <label id="label-stock-actual">Stock actual
-          <input type="number" id="stock_actual" min="0" required placeholder="0">
+          <input type="number" id="stock_actual" min="0" required placeholder="0" inputmode="numeric">
           <small id="nota-stock-actual" class="nota-campo" style="display:none;">
             El stock actual no se edita aquí: se gestiona mediante movimientos de inventario.
           </small>
         </label>
         <label>Stock mínimo
-          <input type="number" id="stock_minimo" min="0" required placeholder="0">
+          <input type="number" id="stock_minimo" min="0" required placeholder="0" inputmode="numeric">
         </label>
       </div>
       <div class="acciones-form">
@@ -404,7 +446,7 @@
       <h2>📦 Inventario</h2>
       <div class="acciones-dev">
         <label class="etiqueta-inline" for="cantidad-seed">Cantidad</label>
-        <input type="number" id="cantidad-seed" min="1" max="200" value="20" title="Cantidad de productos de prueba a generar (1-200)">
+        <input type="number" id="cantidad-seed" min="1" max="200" value="20" title="Cantidad de productos de prueba a generar (1-200)" inputmode="numeric">
         <button type="button" id="btn-seed" class="btn-secundario">🎲 Cargar datos de prueba</button>
       </div>
     </div>
@@ -434,11 +476,102 @@
     </table>
   </section>
 
+  </div>
+
+  <div id="vista-movimientos" class="vista">
+
+  <section class="panel">
+    <h2>🔄 Registrar movimiento</h2>
+    <form id="form-movimiento">
+      <div class="campo-grid">
+        <label>Producto
+          <input type="text" id="mov_producto_input" list="mov-productos-list" required
+         autocomplete="off" placeholder="Escribí para buscar...">
+          <datalist id="mov-productos-list"></datalist>
+        </label>
+        <label>Categoría
+          <select id="mov_categoria" required>
+            <option value="venta">Venta (descuenta)</option>
+            <option value="ingreso">Ingreso (incrementa)</option>
+            <option value="estropeo">Estropeo (descuenta)</option>
+            <option value="devolucion">Devolución (incrementa)</option>
+          </select>
+        </label>
+        <label>Cantidad
+          <input type="number" id="mov_cantidad" min="1" required placeholder="1" inputmode="numeric">
+        </label>
+        <label>DNI cliente (opcional)
+          <input type="text" id="mov_dni_cliente" maxlength="8" inputmode="numeric" pattern="[0-9]*" placeholder="Ej: 30123456">
+        </label>
+        <label>DNI empleado (opcional)
+          <input type="text" id="mov_dni_empleado" maxlength="8" inputmode="numeric" pattern="[0-9]*" placeholder="Ej: 28900111">
+        </label>
+      </div>
+      <div class="acciones-form">
+        <button type="submit" class="btn-primario" id="btn-guardar-movimiento">Registrar movimiento</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>🧾 Historial de movimientos</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Fecha/hora</th>
+          <th>Categoría</th>
+          <th>Producto</th>
+          <th>Cantidad</th>
+          <th>Cliente</th>
+          <th>Empleado</th>
+        </tr>
+      </thead>
+      <tbody id="tabla-movimientos">
+        <tr>
+          <td colspan="7">
+            <div class="estado-carga">
+              <span class="spinner" aria-hidden="true"></span>
+              <span>Cargando movimientos...</span>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  </div>
+
 </main>
 
 <footer>Sistema de Gestión de Stock — Juguetería</footer>
 
 <script src="config.js"></script>
 <script src="app.js"></script>
+<script src="movimientos.js"></script>
+<script>
+  // Alternar entre las vistas "Inventario" y "Movimientos".
+  const tabBtnProductos = document.getElementById("tab-btn-productos");
+  const tabBtnMovimientos = document.getElementById("tab-btn-movimientos");
+  const vistaProductos = document.getElementById("vista-productos");
+  const vistaMovimientos = document.getElementById("vista-movimientos");
+
+  tabBtnProductos.addEventListener("click", () => {
+    tabBtnProductos.classList.add("activo");
+    tabBtnMovimientos.classList.remove("activo");
+    vistaProductos.classList.add("activa");
+    vistaMovimientos.classList.remove("activa");
+    if (typeof cargarProductos === "function") cargarProductos();
+  });
+
+  tabBtnMovimientos.addEventListener("click", () => {
+    tabBtnMovimientos.classList.add("activo");
+    tabBtnProductos.classList.remove("activo");
+    vistaMovimientos.classList.add("activa");
+    vistaProductos.classList.remove("activa");
+    if (typeof cargarOpcionesDeProductos === "function") cargarOpcionesDeProductos();
+    if (typeof cargarMovimientos === "function") cargarMovimientos();
+  });
+</script>
 </body>
 </html>

@@ -69,6 +69,37 @@ services:
       retries: 5
       start_period: 10s
 
+  movimientos:
+    build:
+      context: ./services/movimientos
+    container_name: jugueteria-movimientos
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${MOVIMIENTOS_DATABASE_URL:-sqlite:////app/data/movimientos.db}
+      # Dentro de la red interna de Docker Compose, "productos" resuelve
+      # por el nombre del servicio (puerto interno 8000, no el publicado).
+      PRODUCTOS_SERVICE_URL: http://productos:8000
+      # Mismo secreto y Redis que auth y productos: movimientos valida el
+      # JWT localmente y consulta la blacklist de tokens revocados.
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - movimientos_data:/app/data
+    ports:
+      - "${MOVIMIENTOS_PORT:-8002}:8000"
+    depends_on:
+      productos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+
   frontend:
     build:
       context: ./frontend
@@ -81,6 +112,7 @@ services:
       # solo resuelven entre contenedores).
       PRODUCTOS_API_URL: ${PRODUCTOS_API_URL:-http://localhost:8000}
       AUTH_API_URL: ${AUTH_API_URL:-http://localhost:8001}
+      MOVIMIENTOS_API_URL: ${MOVIMIENTOS_API_URL:-http://localhost:8002}
       # Botones de "acceso rápido" por rol (solo entorno de desarrollo).
       # Si HABILITAR_USUARIOS_PRUEBA no es "true", el entrypoint vacía las
       # credenciales en config.js y los botones no se muestran.
@@ -92,12 +124,14 @@ services:
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     depends_on:
+      movimientos:
+        condition: service_healthy
       productos:
         condition: service_healthy
       auth:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -106,3 +140,4 @@ services:
 volumes:
   productos_data:
   auth_data:
+  movimientos_data:

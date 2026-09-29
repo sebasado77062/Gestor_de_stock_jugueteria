@@ -3,6 +3,7 @@
 window.APP_CONFIG = {
   PRODUCTOS_API_URL: "${PRODUCTOS_API_URL}",
   AUTH_API_URL: "${AUTH_API_URL}",
+  MOVIMIENTOS_API_URL: "${MOVIMIENTOS_API_URL}",
   // Acceso rápido por rol (solo entorno de pruebas). Si HABILITAR_USUARIOS_PRUEBA
   // no es "true", el entrypoint deja acá "false" y credenciales vacías.
   USUARIOS_PRUEBA: {
