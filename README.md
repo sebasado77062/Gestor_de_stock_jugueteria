@@ -98,6 +98,120 @@ puede definir un admin propio con `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD`
 > usuario existente conserva la anterior: `docker compose down -v` para
 > empezar de cero.
 
+## Cómo probar el sistema de punta a punta
+
+Guía rápida para verificar manualmente que el sistema completo funciona:
+autenticación, CRUD de productos, registro de movimientos, ajuste atómico de
+stock y alerta asíncrona de stock bajo.
+
+### Preparación
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+```
+
+Esperar a que todos los contenedores queden `healthy` (excepto
+`worker-alertas`, que se verifica por logs). Abrir:
+
+- **Frontend:** http://localhost:8080
+- **Panel de RabbitMQ:** http://localhost:15672 (usuario/clave en `.env`, por defecto `admin` / `admin123`)
+
+### Paso 1 — Login
+
+1. Abrir `http://localhost:8080`.
+2. Usar el botón de **acceso rápido como Admin** (o loguearse con
+   `admin@test.com` / `admin12345`).
+3. Verificar que aparece el nombre y rol del usuario en el header.
+
+### Paso 2 — Crear un producto con stock bajo
+
+1. Ir a la pestaña **Inventario**.
+2. Crear un producto con:
+   - Nombre: `Producto de prueba`
+   - Precio: `500`
+   - Stock actual: `5`
+   - Stock mínimo: `10` ← **más alto que el actual, para forzar la alerta**
+3. Guardar. El producto aparece en la tabla con la etiqueta de stock bajo.
+
+### Paso 3 — Registrar una venta
+
+1. Ir a la pestaña **Movimientos**.
+2. Producto: elegir "Producto de prueba" del dropdown (escribir "Produ" para
+   filtrar).
+3. Categoría: **Venta (descuenta)**.
+4. Cantidad: `2`.
+5. Click en **Registrar movimiento**.
+
+Verificar:
+- Aparece un mensaje verde "Movimiento registrado correctamente".
+- El movimiento aparece en la tabla de abajo con la categoría marcada en rojo.
+- Volver a la pestaña **Inventario**: el stock bajó de `5` a `3`.
+
+### Paso 4 — Verificar la alerta asíncrona
+
+El evento `movimiento.registrado` se publicó en RabbitMQ. El worker lo
+consumió y evaluó que el stock quedó por debajo del mínimo. Verificar en los
+logs:
+
+```bash
+docker compose logs worker-alertas | Select-Object -Last 5
+```
+
+Debería aparecer algo como:
+
+```
+[ALERTA STOCK BAJO] producto=Producto de prueba (id=1) stock_actual=3 stock_minimo=10 -- disparado por movimiento id_movimiento=1
+```
+
+También se puede ver el flujo en el panel de RabbitMQ:
+- **Exchanges** → `stock.events` con publish count > 0.
+- **Queues** → `alertas.stock.bajo` con acknowledges > 0.
+
+### Paso 5 — Probar la concurrencia (opcional, vía tests)
+
+La concurrencia se verifica con los tests, que simulan ventas simultáneas
+reales con hilos:
+
+```bash
+docker compose exec productos pytest tests/test_concurrencia_stock.py -v
+```
+
+Esperado: los 2 tests pasan. Uno demuestra el problema (sobreventa con un
+ajuste no atómico), el otro demuestra que el ajuste atómico la previene.
+
+### Paso 6 — Probar la idempotencia (opcional)
+
+Con el token obtenido del navegador (DevTools → Application → Local Storage
+→ `jugueteria.sesion` → campo `access`), enviar dos veces el mismo request
+con la misma `Idempotency-Key`:
+
+```powershell
+$TOKEN = "pegar-token-aca"
+
+curl.exe -X POST http://localhost:8002/api/v1/movimientos `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer $TOKEN" `
+  -H "Idempotency-Key: prueba-manual-001" `
+  -d '{\"categoria_movimiento\":\"venta\",\"cantidad_movida\":1,\"id_producto\":1}'
+```
+
+Ejecutar el mismo comando dos veces. Ambas respuestas deben traer el **mismo
+`id_movimiento`**, y el stock del producto debe haber bajado **una sola
+unidad** (no dos).
+
+### Resumen de lo que se prueba
+
+| Paso | Qué se valida |
+|---|---|
+| 1 | Autenticación JWT + roles |
+| 2 | CRUD de productos + validación de stock mínimo |
+| 3 | Vertical completa: frontend → movimientos → productos → DB |
+| 4 | Mensajería asíncrona: publish en RabbitMQ + consumo por el worker |
+| 5 | Concurrencia: ajuste atómico bajo ventas simultáneas |
+| 6 | Idempotencia: reintento con la misma clave no duplica |
+
 ## Concurrencia en el ajuste de stock
 
 ### Problema

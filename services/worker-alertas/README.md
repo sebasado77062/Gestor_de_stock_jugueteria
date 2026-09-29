@@ -8,7 +8,25 @@ alerta cuando el stock resultante de un producto queda por debajo de su
 No expone una API: es un proceso de background (`python worker.py`) que se
 queda escuchando la cola. Por eso no tiene healthcheck HTTP en
 `docker-compose.yml`; su "salud" se verifica por sus logs
-(`docker compose logs -f worker-alertas`).
+(`docker compose logs -f worker-alertas`). `docker compose ps` va a
+mostrarlo como `Up` sin `(healthy)`, y eso es esperado.
+
+## Evento consumido
+
+El evento `movimiento.registrado` es **autocontenido**: incluye un snapshot
+del producto (`stock_actual`, `stock_minimo`, `nombre_producto`) al momento
+del ajuste, junto con los datos del movimiento. Por eso el worker **no
+necesita consultar a `productos`** para evaluar la alerta: toda la
+información que necesita viene en el propio payload.
+
+Esto es una decisión de diseño deliberada. La alternativa (que el worker
+llamara a `productos` por HTTP) habría requerido que el worker tuviera un
+JWT de usuario válido, pero un consumidor asíncrono no tiene uno. Incluir el
+snapshot en el evento elimina esa dependencia, reduce el acoplamiento y
+hace al worker más simple (una sola conexión: RabbitMQ).
+
+Ver `services/movimientos/EVENTOS.md` para el catálogo completo del evento
+(exchange, routing key, payload, garantías de entrega).
 
 ## Topología de colas
 
@@ -42,17 +60,20 @@ worker consulta una base SQLite local (`alertas_procesadas.db`, montada
 como volumen) para saber si ya generó (o descartó) una alerta para ese
 movimiento. Si ya fue procesado, confirma el mensaje sin reprocesar. Esto
 es necesario porque RabbitMQ entrega *at-least-once*: el mismo mensaje
-puede llegar más de una vez.
+puede llegar más de una vez (por ejemplo, si el worker se cae después de
+procesar pero antes de confirmar).
 
 ## Variables de entorno
 
 | Variable | Default | Descripción |
 |---|---|---|
 | `RABBITMQ_URL` | `amqp://admin:admin123@localhost:5672/` | Conexión al broker |
-| `PRODUCTOS_SERVICE_URL` | `http://localhost:8000` | Para consultar `stock_actual`/`stock_minimo` |
 | `ALERTAS_DB_PATH` | `/app/data/alertas_procesadas.db` | Base local de idempotencia |
 | `MAX_REINTENTOS` | `5` | Reintentos antes de enviar a la DLQ final |
 | `RETRY_TTL_MS` | `5000` | Backoff entre reintentos (fijo; se podría escalonar con más colas de retry) |
+
+Nota: ya **no** se usa `PRODUCTOS_SERVICE_URL`, porque el worker no
+consulta Productos (el evento es autocontenido, ver arriba).
 
 ## Tests
 
@@ -62,6 +83,13 @@ pip install -r requirements.txt
 pytest
 ```
 
-Los tests (`tests/test_worker_alertas.py`) cubren la idempotencia y la
-evaluación de la alerta sin necesitar RabbitMQ ni Productos corriendo (se
-inyecta un doble de prueba para `obtener_producto`).
+Los tests (`tests/test_worker_alertas.py`) cubren:
+- **Idempotencia**: un `id_movimiento` ya procesado no se vuelve a
+  procesar; el registro es idempotente por sí mismo (INSERT OR IGNORE).
+- **Evaluación de la alerta**: se dispara cuando `stock_actual <
+  stock_minimo` en el payload, y no se dispara cuando hay stock suficiente.
+- **Conteo de reintentos**: parseo del header `x-death` que RabbitMQ
+  agrega en cada dead-lettering.
+
+No requieren RabbitMQ ni Productos corriendo: el payload del evento se
+construye directamente en cada test (ya trae el snapshot del producto).
