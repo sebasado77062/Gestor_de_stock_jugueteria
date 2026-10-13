@@ -24,7 +24,13 @@ _cliente_redis: Optional["redis.Redis"] = None
 def _obtener_cliente() -> "redis.Redis":
     global _cliente_redis
     if _cliente_redis is None:
-        _cliente_redis = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=3)
+        if REDIS_URL.startswith("memory://"):
+            # Modo local sin Redis (solo desarrollo, ver ejecutar_local.ps1): mismo
+            # criterio que app/core/jwt_auth.py. Es un Redis propio de este proceso.
+            import fakeredis
+            _cliente_redis = fakeredis.FakeRedis(decode_responses=True)
+        else:
+            _cliente_redis = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=3)
     return _cliente_redis
 
 
