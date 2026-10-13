@@ -10,6 +10,7 @@ administración (HTML/JS) servido con nginx.
 .
 ├── docker-compose.yml
 ├── .env.example
+├── ejecutar_local.ps1     # Windows, sin Docker: levanta auth, productos, movimientos y frontend
 ├── docs/
 │   └── ARQUITECTURA.md    # Diagramas (servicios, capas, flujos, concurrencia)
 ├── services/
@@ -32,6 +33,9 @@ se relacionan.
 
 No se necesita Python ni Node.js instalados localmente: todo corre dentro de
 contenedores.
+
+Alternativa opcional en Windows, sin Docker: Python 3.10 a 3.13 (recomendado
+3.12) y el script `ejecutar_local.ps1`. Ver "Desarrollo local sin Docker".
 
 ## Puesta en marcha desde cero
 
@@ -135,6 +139,10 @@ Esperar a que todos los contenedores queden `healthy` (excepto
    - Stock mínimo: `10` ← **más alto que el actual, para forzar la alerta**
 3. Guardar. El producto aparece en la tabla con la etiqueta de stock bajo.
 
+> Cada campo tiene un texto de ayuda y un tooltip ("?"), y la guía
+> desplegable de la pantalla incluye un botón que completa el formulario con
+> un ejemplo.
+
 ### Paso 3 — Registrar una venta
 
 1. Ir a la pestaña **Movimientos**.
@@ -201,6 +209,21 @@ Ejecutar el mismo comando dos veces. Ambas respuestas deben traer el **mismo
 `id_movimiento`**, y el stock del producto debe haber bajado **una sola
 unidad** (no dos).
 
+### Paso 7 — Probar errores y envíos duplicados (opcional, manual)
+
+Verificaciones del panel (ver la sección "Interfaz del panel"):
+
+1. **Error por campo:** en Inventario, escribir solo espacios en *Nombre* y
+   guardar. El servidor responde 400 y el mensaje aparece **debajo del campo**.
+2. **Doble clic:** en las herramientas del navegador (F12 → Red) elegir
+   "Slow 3G" y hacer doble clic en *Guardar producto*. Se ve el spinner y se
+   crea **un solo** producto.
+3. **Sin conexión:** elegir "Offline" y guardar. Aparece un aviso de
+   conexión y los datos siguen en el formulario.
+4. **Stock insuficiente:** en Movimientos, registrar una venta con más
+   unidades que el stock. El aviso bajo *Cantidad* indica cuántas hay
+   disponibles.
+
 ### Resumen de lo que se prueba
 
 | Paso | Qué se valida |
@@ -211,6 +234,7 @@ unidad** (no dos).
 | 4 | Mensajería asíncrona: publish en RabbitMQ + consumo por el worker |
 | 5 | Concurrencia: ajuste atómico bajo ventas simultáneas |
 | 6 | Idempotencia: reintento con la misma clave no duplica |
+| 7 | Errores por campo, anti-duplicados y manejo de fallas de red en el panel |
 
 ## Concurrencia en el ajuste de stock
 
@@ -289,9 +313,17 @@ problema de red), el servicio:
    volver a ajustar stock**.
 3. Si no existe, procesa normalmente y guarda la clave con un TTL de 24 h.
 
-Si Redis está caído, el servicio **degradación controlada**: sigue
+Si Redis está caído, el servicio **degrada de forma controlada**: sigue
 funcionando pero pierde la garantía de idempotencia en ese request puntual
 (se loguea la excepción y se continúa).
+
+El **frontend** genera la clave (un UUID por intento de registro). Si el
+intento termina sin respuesta definitiva (timeout, corte de red o 5xx) y los
+datos no cambiaron, el reintento reutiliza la misma clave; con una respuesta
+definitiva o con datos distintos se genera una nueva. La garantía tiene
+límites: la clave se consulta y se guarda en pasos separados (no es atómico)
+y solo se registra si el primer intento llegó a completarse. `POST
+/api/v1/productos` no tiene idempotencia.
 
 ### Evento `movimiento.registrado`
 
@@ -344,12 +376,38 @@ docker compose logs -f worker-alertas
 open http://localhost:15672   # usuario/clave en .env
 ```
 
+## Interfaz del panel (frontend)
+
+El panel (`frontend/index.html`, `app.js` y `movimientos.js`) incluye, en
+Inventario y en Movimientos:
+
+- **Errores de validación junto al campo:** los errores 400 del backend
+  (`detalles`) se traducen a español y se muestran bajo el campo
+  correspondiente, con borde rojo y `aria-invalid`. En Movimientos también se
+  muestran junto al campo el producto no elegido, el stock insuficiente (con
+  las unidades disponibles) y el producto inexistente.
+- **Ayuda al usuario:** texto de ayuda con regla y ejemplo en cada campo,
+  tooltip ("?") con la explicación de qué se ingresa, y una guía desplegable
+  por pantalla con un botón que completa el formulario con un ejemplo.
+- **Envíos seguros:** el botón se bloquea con un spinner mientras se procesa
+  la petición y se ignoran envíos repetidos (doble clic, Enter). Las
+  peticiones tienen un tiempo máximo de espera de 15 s y, ante fallas de red,
+  los datos quedan en el formulario con un aviso claro. Al crear un producto,
+  si no hay respuesta, el aviso pide revisar el inventario antes de
+  reintentar.
+- **Accesibilidad básica:** `lang="es"`, labels asociados, tooltips operables
+  con teclado (Escape los oculta) y mensajes anunciados con `aria-live`.
+
+Ver el flujo completo en
+[`docs/ARQUITECTURA.md`](./docs/ARQUITECTURA.md#frontend-validación-errores-y-envíos).
+
 ## Variables de entorno
 
 Ver `.env.example` para el detalle de cada variable. `AUTH_SECRET_KEY`
-(firma de los JWT) es obligatoria; el valor de `.env.example` es solo para
-desarrollo. El archivo `.env` real **no se sube al repositorio** (ver
-`.gitignore`).
+(firma de los JWT) es **obligatoria** y hoy `.env.example` no la incluye:
+agregar a mano una línea `AUTH_SECRET_KEY=<un valor largo y aleatorio>` en el
+`.env`; sin ella `docker compose up` se detiene con un mensaje pidiéndola. El
+archivo `.env` real **no se sube al repositorio** (ver `.gitignore`).
 
 ## Persistencia de datos
 
@@ -375,12 +433,48 @@ docker compose exec productos python seed_data.py
 
 ## Desarrollo local sin Docker (opcional)
 
-**Windows, sin instalar Redis ni RabbitMQ:** `.\ejecutar_local.ps1` (desde
-PowerShell, en la raíz del proyecto) crea los entornos virtuales, instala
-dependencias y levanta `auth`, `productos` y el frontend, usando un Redis en
-memoria (`REDIS_URL=memory://`, vía `fakeredis`). Solo para probar: el
-logout no invalida el token en `productos`, y `movimientos` no funciona
-porque requiere RabbitMQ (que no está disponible en este modo).
+**Windows, sin instalar Redis ni RabbitMQ.** Requiere Python 3.10 a 3.13
+(recomendado 3.12; las dependencias fijadas no se instalan en 3.14 o
+superior). Desde PowerShell, en la raíz del proyecto ya descomprimida:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1
+```
+
+El script crea un entorno virtual por servicio, instala las dependencias
+(`requirements-local.txt`) y abre una ventana de PowerShell para cada uno:
+
+| Componente | Puerto |
+|---|---|
+| `auth` | 8001 |
+| `productos` | 8000 |
+| `movimientos` | 8002 |
+| `frontend` (`python -m http.server`) | 8080 |
+
+Los cuatro puertos deben estar libres. Cada servicio usa un Redis en memoria
+(`REDIS_URL=memory://`, vía `fakeredis`). Es solo para probar; limitaciones
+de este modo:
+
+- **No corren RabbitMQ ni `worker-alertas`.** Los movimientos se registran
+  igual, pero la publicación del evento falla (se ve un error de AMQP en la
+  ventana de `movimientos`, sin afectar el `201`) y no se procesan alertas de
+  stock bajo.
+- **Logout parcial:** cada servicio tiene su propio Redis en memoria. `auth`
+  revoca los tokens en el suyo, pero `productos` y `movimientos` siguen
+  aceptando el access token hasta que expira (15 min). Con `docker compose`
+  (Redis compartido) queda revocado en los tres.
+- El estado en memoria (bloqueo por intentos de login, rotación de refresh
+  tokens, idempotencia de movimientos) se pierde al reiniciar el servicio.
+
+Si el script falla:
+
+- Ejecutarlo con **PowerShell**, no con Python (un `SyntaxError` sobre `@'`
+  indica que se corrió con `python`).
+- Si aparece `No module named pip`, `No pyvenv.cfg file` o
+  `No module named uvicorn`, el entorno virtual quedó a medias (suele pasar
+  por el antivirus o una versión de Python incompatible): borrar la carpeta
+  `venv` de ese servicio y volver a ejecutar.
+- Si el navegador no muestra los cambios del frontend, recargar con Ctrl+F5.
 
 Alternativa manual: cada servicio se puede correr con `uvicorn app.main:app
 --reload` en su propio virtualenv, ver el README de cada uno bajo
@@ -417,11 +511,13 @@ Cobertura actual:
 
 | Servicio | Tests | Qué cubre |
 |---|---|---|
-| `productos` | 40 | CRUD, validaciones, baja lógica, autenticación, **concurrencia** (`test_concurrencia_stock.py`) |
+| `productos` | 51 | CRUD, validaciones, baja lógica, autenticación, **concurrencia** (`test_concurrencia_stock.py`) |
 | `movimientos` | 8 | Delta por categoría, propagación de errores, **idempotencia** (`test_idempotencia.py`) |
 | `worker-alertas` | 6 | Idempotencia, evaluación de alerta, conteo de reintentos |
 
-Ver el detalle de qué cubre cada archivo en el README de cada servicio.
+Ver el detalle de qué cubre cada archivo en el README de cada servicio. El
+frontend no tiene tests automáticos en el repositorio: se verifica
+manualmente (ver Paso 7 de "Cómo probar el sistema de punta a punta").
 
 ## Calidad y decisiones de diseño
 
@@ -433,7 +529,9 @@ las respaldan en el README de cada servicio):
   vía movimientos de inventario.
 - **Baja lógica en vez de borrado físico** cuando un producto tiene
   movimientos asociados (se marca `activo=false`), para preservar la
-  trazabilidad histórica.
+  trazabilidad histórica. Está implementada, pero hoy no se activa en uso
+  real porque `tiene_movimientos_asociados` es un placeholder (ver
+  "Limitaciones conocidas").
 - **Concurrencia resuelta con `UPDATE ... WHERE`** en lugar de locking
   optimista o pesimista: es la solución más simple que da la atomicidad
   necesaria sin agregar coordinación entre procesos. Ver sección
@@ -472,3 +570,15 @@ para el detalle de cada una. Las más relevantes:
   concurrencia real y la separación física de datos.
 - `worker-alertas` no tiene healthcheck HTTP.
 - Sin pipeline de CI (los tests se corren manualmente).
+- El ajuste de stock (en `productos`) y el guardado del movimiento (en
+  `movimientos`) no son atómicos: no hay compensación si falla el segundo
+  paso.
+- Idempotencia parcial: no es atómica en `movimientos` y `productos` no la
+  tiene.
+- Si RabbitMQ está caído al registrar un movimiento, el evento se pierde
+  (no hay outbox).
+- La tabla de Inventario marca stock bajo con `stock_actual <=
+  stock_minimo`, pero el worker alerta solo con `stock_actual <
+  stock_minimo`.
+- En el modo local sin Docker, el logout no invalida el token en
+  `productos` ni `movimientos` (ver "Desarrollo local sin Docker").
