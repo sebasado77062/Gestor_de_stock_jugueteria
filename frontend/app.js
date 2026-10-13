@@ -246,12 +246,169 @@ function mostrarEstado(mensaje, tipo = "ok") {
   }, 4000);
 }
 
+// ---------------------------------------------------------------------------
+// Errores de validación (400) por campo, envío seguro y fallas de red.
+// Estas funciones también las usa movimientos.js (mismo scope global).
+// ---------------------------------------------------------------------------
+
+// Tiempo máximo de espera de una petición. Si el servidor tarda más (latencia
+// alta, servicio caído), se corta y se informa al usuario en vez de dejar la
+// pantalla "colgada" con el botón bloqueado.
+const TIMEOUT_PETICION_MS = 15000;
+
+// Campo del schema del backend -> id del <input> en el formulario de productos.
+const MAPA_CAMPOS_PRODUCTO = {
+  nombre: "nombre",
+  marca: "marca",
+  categoria: "categoria",
+  precio_venta: "precio_venta",
+  stock_actual: "stock_actual",
+  stock_minimo: "stock_minimo",
+};
+
+/** Traduce un error de Pydantic (campo "detalles" del 400) a un mensaje claro en español. */
+function traducirErrorValidacion(err) {
+  const ctx = err.ctx || {};
+  switch (err.type) {
+    case "missing":
+      return "Este campo es obligatorio.";
+    case "string_too_short":
+      return ctx.min_length === 1
+        ? "Este campo no puede estar vacío."
+        : `Debe tener al menos ${ctx.min_length} caracteres.`;
+    case "string_too_long":
+      return `Puede tener como máximo ${ctx.max_length} caracteres.`;
+    case "greater_than_equal":
+      return ctx.ge === 0 ? "No puede ser negativo." : `Debe ser mayor o igual a ${ctx.ge}.`;
+    case "greater_than":
+      return ctx.gt === 0 ? "Debe ser mayor que 0." : `Debe ser mayor que ${ctx.gt}.`;
+    case "less_than_equal":
+      return `No puede ser mayor que ${ctx.le}.`;
+    case "less_than":
+      return `Debe ser menor que ${ctx.lt}.`;
+    case "int_parsing":
+    case "int_from_float":
+    case "int_type":
+      return "Ingresá un número entero, sin decimales.";
+    case "float_parsing":
+    case "float_type":
+      return "Ingresá un número válido.";
+    case "string_type":
+      return "Ingresá un texto válido.";
+    case "literal_error":
+      return "Elegí una de las opciones disponibles.";
+    default:
+      return err.msg || "El valor ingresado no es válido.";
+  }
+}
+
+/** Quita el mensaje de error de un campo (si lo tiene) y restaura su estado normal. */
+function limpiarErrorDeCampo(input) {
+  if (!input || !input.id) return;
+  const aviso = document.getElementById(`error-${input.id}`);
+  if (aviso) aviso.remove();
+  input.classList.remove("campo-invalido");
+  input.removeAttribute("aria-invalid");
+  if (input.dataset.describedbyOriginal !== undefined) {
+    if (input.dataset.describedbyOriginal) input.setAttribute("aria-describedby", input.dataset.describedbyOriginal);
+    else input.removeAttribute("aria-describedby");
+    delete input.dataset.describedbyOriginal;
+  }
+}
+
+function limpiarErroresDeCampo(contenedor) {
+  contenedor.querySelectorAll(".campo-invalido").forEach(limpiarErrorDeCampo);
+  contenedor.querySelectorAll(".error-campo").forEach((el) => el.remove());
+}
+
+/**
+ * Muestra cada error del 400 junto a su campo (texto rojo + borde rojo +
+ * aria-invalid) y enfoca el primero. Devuelve los mensajes que no se pudieron
+ * asociar a ningún campo, para mostrarlos en el aviso general.
+ */
+function mostrarErroresDeCampo(detalles, mapaCampos) {
+  const sinCampo = [];
+  let primerInvalido = null;
+
+  (Array.isArray(detalles) ? detalles : []).forEach((err) => {
+    const nombreCampo = Array.isArray(err.loc) ? err.loc[err.loc.length - 1] : null;
+    const idInput = mapaCampos[nombreCampo];
+    const input = idInput ? document.getElementById(idInput) : null;
+    const mensaje = traducirErrorValidacion(err);
+
+    if (!input) {
+      sinCampo.push(mensaje);
+      return;
+    }
+    if (input.classList.contains("campo-invalido")) return; // un mensaje por campo
+
+    const aviso = document.createElement("small");
+    aviso.className = "error-campo";
+    aviso.id = `error-${input.id}`;
+    aviso.setAttribute("role", "alert");
+    aviso.textContent = mensaje;
+    (input.closest(".dropdown") || input).insertAdjacentElement("afterend", aviso);
+
+    input.dataset.describedbyOriginal = input.getAttribute("aria-describedby") || "";
+    input.setAttribute("aria-describedby", `${aviso.id} ${input.dataset.describedbyOriginal}`.trim());
+    input.setAttribute("aria-invalid", "true");
+    input.classList.add("campo-invalido");
+    if (!primerInvalido) primerInvalido = input;
+  });
+
+  if (primerInvalido) primerInvalido.focus();
+  return sinCampo;
+}
+
+/** Deshabilita el botón y muestra un spinner con un texto de progreso. */
+function bloquearBoton(boton, textoCargando) {
+  boton.disabled = true;
+  boton.setAttribute("aria-busy", "true");
+  boton.innerHTML = `<span class="spinner spinner-btn" aria-hidden="true"></span>${textoCargando}`;
+}
+
+function liberarBoton(boton, texto) {
+  boton.disabled = false;
+  boton.removeAttribute("aria-busy");
+  boton.textContent = texto;
+}
+
+/** apiFetch con tiempo máximo de espera (AbortController). */
+async function apiFetchConTimeout(url, opciones = {}, ms = TIMEOUT_PETICION_MS) {
+  const controlador = new AbortController();
+  const temporizador = setTimeout(() => controlador.abort(), ms);
+  try {
+    return await apiFetch(url, { ...opciones, signal: controlador.signal });
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
+
+/** Lee el JSON de la respuesta; si no es JSON (p. ej. un 502 de un proxy), devuelve {}. */
+async function leerJson(resp) {
+  try {
+    return await resp.json();
+  } catch (e) {
+    return {};
+  }
+}
+
+/** Mensaje para fallas de red, timeout o servidor caído, con el consejo que corresponda. */
+function describirFallaDeRed(error, consejo) {
+  let causa;
+  if (!navigator.onLine) causa = "Parece que no hay conexión a internet.";
+  else if (error && error.name === "AbortError") causa = `El servidor tardó más de ${TIMEOUT_PETICION_MS / 1000} segundos en responder.`;
+  else causa = "No se pudo conectar con el servidor.";
+  return `${causa} ${consejo}`;
+}
+
 function formatearPrecio(valor) {
   return valor.toLocaleString("es-AR", { style: "currency", currency: "ARS" });
 }
 
 function limpiarFormulario() {
   form.reset();
+  limpiarErroresDeCampo(form);
   campoId.value = "";
   tituloForm.textContent = "➕ Nuevo producto";
   btnGuardar.textContent = "Guardar producto";
@@ -384,8 +541,13 @@ async function eliminarProducto(id) {
   }
 }
 
+// Barrera contra envíos duplicados: mientras hay una petición en curso (doble
+// clic, Enter repetido) cualquier otro envío se ignora.
+let envioProductoEnCurso = false;
+
 form.addEventListener("submit", async (evento) => {
   evento.preventDefault();
+  if (envioProductoEnCurso) return;
 
   const idExistente = campoId.value;
   const esEdicion = Boolean(idExistente);
@@ -409,26 +571,73 @@ form.addEventListener("submit", async (evento) => {
   const url = esEdicion ? `${API_BASE_URL}/${idExistente}` : API_BASE_URL;
   const metodo = esEdicion ? "PUT" : "POST";
 
+  envioProductoEnCurso = true;
+  limpiarErroresDeCampo(form);
+  bloquearBoton(btnGuardar, esEdicion ? "Guardando cambios..." : "Guardando...");
+  btnCancelar.disabled = true;
+  form.setAttribute("aria-busy", "true");
+
   try {
-    const resp = await apiFetch(url, {
+    const resp = await apiFetchConTimeout(url, {
       method: metodo,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
-    const data = await resp.json();
+    const data = await leerJson(resp);
 
     if (resp.ok) {
       mostrarEstado(esEdicion ? "Producto actualizado correctamente." : "Producto creado correctamente.", "ok");
       limpiarFormulario();
       cargarProductos();
+    } else if (resp.status === 400 && Array.isArray(data.detalles)) {
+      // Cada error se muestra junto a su campo; lo que no tenga campo va al aviso general.
+      const sinCampo = mostrarErroresDeCampo(data.detalles, MAPA_CAMPOS_PRODUCTO);
+      mostrarEstado(sinCampo.length ? sinCampo.join(" ") : "Revisá los campos marcados en rojo.", "error");
     } else {
       mostrarEstado(data.mensaje || data.detail || "Ocurrió un error al guardar el producto.", "error");
     }
   } catch (error) {
     if (error.sesionExpirada) return;
-    mostrarEstado("Error de conexión con la API.", "error");
+    // POST de producto no es idempotente en el backend: si la respuesta no
+    // llegó, el producto pudo haberse creado igual. Se refresca el listado
+    // para que el usuario lo verifique antes de reintentar.
+    mostrarEstado(
+      describirFallaDeRed(
+        error,
+        esEdicion
+          ? "Tus datos siguen en el formulario: podés reintentar."
+          : "No podemos confirmar si el producto se guardó: revisá el inventario antes de volver a intentar, para no duplicarlo."
+      ),
+      "error"
+    );
+    if (!esEdicion) cargarProductos();
+  } finally {
+    envioProductoEnCurso = false;
+    liberarBoton(btnGuardar, campoId.value ? "Guardar cambios" : "Guardar producto");
+    btnCancelar.disabled = false;
+    form.removeAttribute("aria-busy");
   }
+});
+
+// El error de un campo desaparece apenas el usuario empieza a corregirlo.
+form.addEventListener("input", (evento) => limpiarErrorDeCampo(evento.target));
+
+// Botón de la guía: rellena el formulario con un ejemplo (no guarda nada).
+const btnEjemplo = document.getElementById("btn-ejemplo");
+btnEjemplo.addEventListener("click", () => {
+  if (campoId.value) {
+    mostrarEstado("Estás editando un producto: cancelá la edición para usar el ejemplo.", "error");
+    return;
+  }
+  limpiarErroresDeCampo(form);
+  campoNombre.value = "Muñeca Bebota";
+  campoMarca.value = "Playkids";
+  campoCategoria.value = "Muñecas";
+  campoPrecio.value = "12500.50";
+  campoStockActual.value = "20";
+  campoStockMinimo.value = "5";
+  campoNombre.focus();
 });
 
 btnCancelar.addEventListener("click", limpiarFormulario);

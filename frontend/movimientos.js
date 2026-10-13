@@ -282,8 +282,35 @@ function renderizarTablaMovimientos(movimientos) {
 // Envío del formulario
 // ---------------------------------------------------------------------------
 
+// Estado del envío (ver el manejador de submit más abajo).
+let envioMovimientoEnCurso = false;
+let intentoMovimiento = null; // { clave, huella } del último intento sin respuesta definitiva
+
+// Campo del schema del backend -> id del <input> en el formulario de movimientos.
+const MAPA_CAMPOS_MOVIMIENTO = {
+  categoria_movimiento: "mov_categoria_input",
+  cantidad_movida: "mov_cantidad",
+  id_producto: "mov_producto_input",
+  dni_cliente: "mov_dni_cliente",
+  dni_empleado: "mov_dni_empleado",
+};
+
+/** UUID v4 para el header Idempotency-Key (con alternativa si el navegador no tiene randomUUID). */
+function generarClaveIdempotencia() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+  else for (let k = 0; k < 16; k++) bytes[k] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 formMovimiento.addEventListener("submit", async (evento) => {
   evento.preventDefault();
+  // Barrera contra envíos duplicados (doble clic, Enter repetido).
+  if (envioMovimientoEnCurso) return;
 
   // Si el usuario escribió el texto exacto de una opción sin hacer clic,
   // se resuelve el id a partir del texto.
@@ -306,15 +333,37 @@ formMovimiento.addEventListener("submit", async (evento) => {
     dni_empleado: campoDniEmpleado.value.trim() || null,
   };
 
-  btnGuardarMovimiento.disabled = true;
+  // Un intento = una Idempotency-Key. Si el intento anterior terminó sin
+  // respuesta (timeout, corte de red, 5xx) y el formulario no cambió, se
+  // reutiliza la MISMA clave: si el servidor ya había registrado el movimiento,
+  // devuelve ese mismo y no vuelve a ajustar el stock. Si los datos cambian,
+  // se genera una clave nueva.
+  const huella = JSON.stringify(payload);
+  if (!intentoMovimiento || intentoMovimiento.huella !== huella) {
+    intentoMovimiento = { clave: generarClaveIdempotencia(), huella };
+  }
+
+  envioMovimientoEnCurso = true;
+  limpiarErroresDeCampo(formMovimiento);
+  bloquearBoton(btnGuardarMovimiento, "Registrando...");
+  formMovimiento.setAttribute("aria-busy", "true");
+
   try {
-    const resp = await apiFetch(`${MOVIMIENTOS_API_BASE}/movimientos`, {
+    const resp = await apiFetchConTimeout(`${MOVIMIENTOS_API_BASE}/movimientos`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": intentoMovimiento.clave,
+      },
       body: JSON.stringify(payload),
     });
 
-    const data = await resp.json();
+    const data = await leerJson(resp);
+
+    // Con cualquier respuesta definitiva (< 500) el intento terminó: el
+    // próximo envío usará una clave nueva. Con 5xx el resultado es incierto:
+    // se conserva la clave para que el reintento no duplique el movimiento.
+    if (resp.status < 500) intentoMovimiento = null;
 
     if (resp.ok) {
       mostrarEstado("Movimiento registrado correctamente. El stock del producto fue actualizado.", "ok");
@@ -324,16 +373,30 @@ formMovimiento.addEventListener("submit", async (evento) => {
       cargarMovimientos();
       cargarOpcionesDeProductos();
       if (typeof cargarProductos === "function") cargarProductos();
+    } else if (resp.status === 400 && Array.isArray(data.detalles)) {
+      const sinCampo = mostrarErroresDeCampo(data.detalles, MAPA_CAMPOS_MOVIMIENTO);
+      mostrarEstado(sinCampo.length ? sinCampo.join(" ") : "Revisá los campos marcados en rojo.", "error");
     } else {
       mostrarEstado(data.mensaje || data.detail || "Ocurrió un error al registrar el movimiento.", "error");
     }
   } catch (error) {
     if (error.sesionExpirada) return;
-    mostrarEstado("Error de conexión con el servicio de Movimientos.", "error");
+    mostrarEstado(
+      describirFallaDeRed(
+        error,
+        "Tus datos siguen en el formulario. Podés reintentar: si el movimiento ya se había registrado, no se duplica."
+      ),
+      "error"
+    );
   } finally {
-    btnGuardarMovimiento.disabled = false;
+    envioMovimientoEnCurso = false;
+    liberarBoton(btnGuardarMovimiento, "Registrar movimiento");
+    formMovimiento.removeAttribute("aria-busy");
   }
 });
+
+// El error de un campo desaparece apenas el usuario empieza a corregirlo.
+formMovimiento.addEventListener("input", (evento) => limpiarErrorDeCampo(evento.target));
 
 // ---------------------------------------------------------------------------
 // Inicialización

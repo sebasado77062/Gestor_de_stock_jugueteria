@@ -219,6 +219,50 @@
     to{ transform: rotate(360deg); }
   }
 
+  /* --- Ayuda, errores por campo, botón en proceso y guía --- */
+  .ayuda-campo{
+    display:block;
+    font-size: 11px;
+    font-weight: 400;
+    color: #6b6280;
+  }
+  .error-campo{
+    display:block;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--danger-fg);
+  }
+  input.campo-invalido, input.campo-invalido:focus{
+    border-color: var(--danger-fg);
+    background: #fff;
+  }
+  button:disabled{
+    opacity: .7;
+    cursor: not-allowed;
+  }
+  .spinner-btn{
+    display:inline-block;
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
+    border-color: rgba(255,255,255,.45);
+    border-top-color: #fff;
+    vertical-align: -2px;
+    margin-right: 6px;
+  }
+  .guia{
+    margin-bottom: 16px;
+    border: 2px dashed var(--turquesa);
+    border-radius: 12px;
+    padding: 10px 14px;
+    background: #F2FBFB;
+    font-size: 14px;
+  }
+  .guia summary{ cursor:pointer; font-weight:700; }
+  .guia ol{ margin: 10px 0; padding-left: 20px; line-height: 1.5; }
+  .guia-tabla{ width:100%; font-size: 13px; margin: 8px 0 12px; }
+  .guia-tabla th, .guia-tabla td{ padding: 6px 8px; text-align:left; }
+
   footer{
     text-align:center;
     font-size: 12px;
@@ -454,7 +498,7 @@
 
 <main id="app-principal" style="display:none;">
 
-  <div id="estado-global" class="estado"></div>
+  <div id="estado-global" class="estado" role="status" aria-live="polite"></div>
 
   <div class="tabs">
     <button type="button" class="tab-btn activo" id="tab-btn-productos">📦 Inventario</button>
@@ -465,29 +509,58 @@
 
   <section class="panel">
     <h2 id="titulo-form">➕ Nuevo producto</h2>
+    <details class="guia" id="guia-producto">
+      <summary>📘 ¿Cómo cargo un producto? Guía rápida con ejemplo</summary>
+      <ol>
+        <li>Completá <strong>Nombre</strong>, <strong>Precio de venta</strong>, <strong>Stock actual</strong> y <strong>Stock mínimo</strong> (obligatorios). <strong>Marca</strong> y <strong>Categoría</strong> son opcionales.</li>
+        <li>Presioná <strong>Guardar producto</strong> <u>una sola vez</u>. Mientras se procesa, el botón muestra un círculo giratorio y se bloquea: esperá el mensaje verde de confirmación.</li>
+        <li>Si algún dato no es válido, aparece un mensaje en rojo <strong>debajo del campo</strong> que hay que corregir. Corregilo y volvé a guardar.</li>
+        <li>Si aparece un aviso de conexión o demora, <strong>no vuelvas a cargarlo enseguida</strong>: revisá primero la tabla de Inventario para ver si el producto ya se guardó.</li>
+        <li>Para modificar un producto usá <strong>Editar</strong> en la tabla. El stock actual no se cambia desde acá: se ajusta con un movimiento (pestaña Movimientos).</li>
+      </ol>
+      <table class="guia-tabla">
+        <thead><tr><th>Campo</th><th>¿Obligatorio?</th><th>Regla</th><th>Ejemplo</th></tr></thead>
+        <tbody>
+          <tr><td>Nombre</td><td>Sí</td><td>Hasta 120 caracteres, no puede quedar vacío</td><td>Muñeca Bebota</td></tr>
+          <tr><td>Marca</td><td>No</td><td>Hasta 80 caracteres</td><td>Playkids</td></tr>
+          <tr><td>Categoría</td><td>No</td><td>Hasta 60 caracteres</td><td>Muñecas</td></tr>
+          <tr><td>Precio de venta</td><td>Sí</td><td>Número de 0 en adelante, con hasta 2 decimales</td><td>12500.50</td></tr>
+          <tr><td>Stock actual</td><td>Sí (al crear)</td><td>Número entero de 0 en adelante</td><td>20</td></tr>
+          <tr><td>Stock mínimo</td><td>Sí</td><td>Número entero de 0 en adelante</td><td>5</td></tr>
+        </tbody>
+      </table>
+      <button type="button" class="btn-secundario btn-chico" id="btn-ejemplo">✨ Rellenar el formulario con este ejemplo</button>
+      <small class="ayuda-campo">Solo completa los campos: no se guarda nada hasta que presiones "Guardar producto".</small>
+    </details>
     <form id="form-producto">
       <input type="hidden" id="id_producto" value="">
       <div class="campo-grid">
         <label>Nombre
-          <input type="text" id="nombre" required maxlength="120" placeholder="Ej: Muñeca Bebota">
+          <input type="text" id="nombre" required maxlength="120" placeholder="Ej: Muñeca Bebota" aria-describedby="ayuda-nombre">
+          <small class="ayuda-campo" id="ayuda-nombre">Obligatorio, hasta 120 caracteres. Ej: Muñeca Bebota</small>
         </label>
         <label>Marca
-          <input type="text" id="marca" maxlength="80" placeholder="Ej: Playkids">
+          <input type="text" id="marca" maxlength="80" placeholder="Ej: Playkids" aria-describedby="ayuda-marca">
+          <small class="ayuda-campo" id="ayuda-marca">Opcional, hasta 80 caracteres. Ej: Playkids</small>
         </label>
         <label>Categoría
-          <input type="text" id="categoria" maxlength="60" placeholder="Ej: Peluches">
+          <input type="text" id="categoria" maxlength="60" placeholder="Ej: Muñecas" aria-describedby="ayuda-categoria">
+          <small class="ayuda-campo" id="ayuda-categoria">Opcional, hasta 60 caracteres. Ej: Muñecas</small>
         </label>
         <label>Precio de venta ($)
-          <input type="number" id="precio_venta" step="0.01" min="0" required placeholder="0.00" inputmode="decimal">
+          <input type="number" id="precio_venta" step="0.01" min="0" required placeholder="0.00" inputmode="decimal" aria-describedby="ayuda-precio">
+          <small class="ayuda-campo" id="ayuda-precio">Obligatorio. Número sin signos, con hasta 2 decimales. Ej: 12500.50</small>
         </label>
         <label id="label-stock-actual">Stock actual
-          <input type="number" id="stock_actual" min="0" required placeholder="0" inputmode="numeric">
+          <input type="number" id="stock_actual" min="0" required placeholder="0" inputmode="numeric" aria-describedby="ayuda-stock-actual">
+          <small class="ayuda-campo" id="ayuda-stock-actual">Obligatorio al crear (stock inicial). Número entero. Ej: 20</small>
           <small id="nota-stock-actual" class="nota-campo" style="display:none;">
             El stock actual no se edita aquí: se gestiona mediante movimientos de inventario.
           </small>
         </label>
         <label>Stock mínimo
-          <input type="number" id="stock_minimo" min="0" required placeholder="0" inputmode="numeric">
+          <input type="number" id="stock_minimo" min="0" required placeholder="0" inputmode="numeric" aria-describedby="ayuda-stock-minimo">
+          <small class="ayuda-campo" id="ayuda-stock-minimo">Obligatorio. Referencia para marcar el stock como bajo. Ej: 5</small>
         </label>
       </div>
       <div class="acciones-form">
