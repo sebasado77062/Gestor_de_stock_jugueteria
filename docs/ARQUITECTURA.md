@@ -16,6 +16,7 @@ flowchart LR
         WORKER["services/worker-alertas<br/>(consumidor RabbitMQ)"]
         REDIS[("Redis<br/>blacklist + idempotencia")]
         RABBIT[("RabbitMQ<br/>exchange stock.events")]
+        DB_AUTH[("SQLite<br/>auth_data")]
         DB_PROD[("SQLite<br/>productos_data")]
         DB_MOV[("SQLite<br/>movimientos_data")]
         DB_ALERTAS[("SQLite<br/>alertas_data")]
@@ -34,7 +35,7 @@ flowchart LR
     MOV -->|"publish movimiento.registrado"| RABBIT
     RABBIT -->|"consume"| WORKER
 
-    AUTH -->|"persiste usuarios"| DB_PROD
+    AUTH -->|"persiste usuarios"| DB_AUTH
     PROD --> DB_PROD
     MOV --> DB_MOV
     WORKER --> DB_ALERTAS
@@ -55,8 +56,10 @@ dependencias y (cuando corresponde) su propia base de datos:
 - **`worker-alertas`**: consumidor asíncrono. Escucha el exchange
   `stock.events` y evalúa si corresponde alertar stock bajo. Es idempotente
   por `id_movimiento` y tiene reintentos con backoff + DLQ.
-- **`frontend`**: nginx sirviendo HTML/JS estático. Genera su `config.js` en
-  runtime a partir de variables de entorno.
+- **`frontend`**: nginx sirviendo HTML/JS estático (en la ejecución local sin
+  Docker lo sirve `python -m http.server`). Genera su `config.js` en runtime a
+  partir de variables de entorno. Ver la sección "Frontend: validación,
+  errores y envíos" más abajo.
 
 ## Capas dentro de un servicio
 
@@ -126,6 +129,78 @@ sequenceDiagram
 Si RabbitMQ está caído, el evento no se publica pero el movimiento **sí**
 queda persistido: la respuesta al usuario no se bloquea por una falla de
 mensajería (se loguea y sigue).
+
+**Quién genera la `Idempotency-Key`**: el frontend (un UUID por intento de
+registro). Si el intento termina sin respuesta definitiva (timeout, corte de
+red o 5xx) y los datos del formulario no cambiaron, el reintento reutiliza la
+**misma** clave; con una respuesta definitiva (< 500) o con datos distintos se
+genera una clave nueva. Así, un reintento tras un timeout no descuenta el
+stock dos veces *si el primer intento llegó a registrar la clave* (ver
+limitaciones).
+
+## Frontend: validación, errores y envíos
+
+El frontend (`frontend/app.js` para Inventario y `frontend/movimientos.js`
+para Movimientos, que comparten el mismo scope) concentra la experiencia de
+usuario del formulario. Cada envío sigue este flujo:
+
+```mermaid
+flowchart TB
+    S["Submit del formulario"] --> G{"Hay un envio en curso?"}
+    G -->|"si"| X["Se ignora (evita duplicados por doble clic o Enter)"]
+    G -->|"no"| B["Bloquea el boton + spinner<br/>timeout de 15 s"]
+    B --> R{"Respuesta"}
+    R -->|"2xx"| OK["Mensaje de exito + limpia el formulario"]
+    R -->|"400"| E400["Cada error de 'detalles' se muestra junto a su campo"]
+    R -->|"409 stock insuficiente<br/>(Movimientos)"| E409["Pista bajo Cantidad con el stock real disponible"]
+    R -->|"404 producto inexistente<br/>(Movimientos)"| E404["Error bajo Producto y se limpia la seleccion"]
+    R -->|"otro 4xx / 5xx"| EG["Mensaje general con el texto de la API"]
+    B -.->|"sin respuesta / timeout"| NR["Aviso de conexion: los datos quedan en el formulario"]
+```
+
+Decisiones de diseño:
+
+- **Errores 400 por campo**: el backend devuelve en `detalles` la lista de
+  errores de Pydantic (`loc`, `type`, `ctx`). El frontend traduce cada `type`
+  a un mensaje en español (`traducirErrorValidacion`), lo muestra bajo el
+  campo, marca el campo con `aria-invalid` y enfoca el primero. El error se
+  borra apenas el usuario corrige ese campo.
+- **Anti-duplicados**: una bandera por formulario ignora envíos mientras hay
+  una petición en curso, y el botón se bloquea con un spinner. Esta barrera
+  protege solo a la pestaña actual.
+- **Fallas de red**: toda petición del formulario tiene un tiempo máximo de
+  espera de 15 s (`AbortController`). Al crear un producto, si no hay
+  respuesta, el mensaje advierte que no se puede confirmar si se guardó y
+  pide revisar el inventario antes de reintentar, porque `POST /productos` no
+  es idempotente en el backend.
+- **Ayuda al usuario**: cada campo tiene un texto de ayuda con su regla y un
+  ejemplo, un tooltip ("?") con la explicación de qué se ingresa, y cada
+  pantalla una guía desplegable con un botón que completa el formulario con
+  un ejemplo (sin guardar nada).
+- **Sesión**: `apiFetch` agrega el JWT, renueva el access token con el
+  refresh token ante un 401 y, si la renovación falla, vuelve al login. Los
+  tokens se guardan en `localStorage`.
+
+## Ejecución local sin Docker (`ejecutar_local.ps1`)
+
+Para Windows existe un script que levanta el sistema sin Docker. Cada
+servicio corre en su propia ventana de PowerShell con su propio entorno
+virtual (Python 3.10 a 3.13):
+
+| Componente | Puerto | En modo local |
+|---|---|---|
+| `auth` | 8001 | Sí |
+| `productos` | 8000 | Sí |
+| `movimientos` | 8002 | Sí (usa `productos` por HTTP) |
+| `frontend` | 8080 | Sí (`python -m http.server`) |
+| Redis | - | Reemplazado por `fakeredis` (`REDIS_URL=memory://`), uno por proceso |
+| RabbitMQ y `worker-alertas` | - | **No corren** |
+
+Consecuencias de no tener RabbitMQ: los movimientos se registran con
+normalidad, pero la publicación del evento falla y queda solo como error en el
+log de `movimientos` (el `201` no se ve afectado), y por lo tanto no se
+procesan alertas de stock bajo. Consecuencias del Redis en memoria: ver la
+última limitación de la lista siguiente.
 
 ## Flujo del evento `movimiento.registrado`
 
@@ -232,7 +307,35 @@ A nivel de sistema completo, las más relevantes hoy son:
 - **Sin pipeline de CI**: los tests existen y pasan localmente, pero
   ejecutarlos es un paso manual. Falta un workflow de GitHub Actions que
   corra `pytest` en cada push.
-- **`fakeredis` en modo local**: cuando se corre sin Docker, `productos` y
-  `movimientos` usan `fakeredis` (Redis en memoria por proceso) para evitar
-  requerir Redis real. El logout no invalida tokens en ese modo; solo
-  funciona con Redis compartido (que es lo que usa `docker compose`).
+- **Ajuste de stock y registro del movimiento no son atómicos**:
+  `movimientos` primero ajusta el stock en `productos` (HTTP) y recién
+  después persiste el movimiento. Si ese guardado falla, o si `productos`
+  aplicó el ajuste pero la respuesta no llegó, el stock queda modificado sin
+  movimiento y no hay compensación.
+- **Idempotencia parcial**: en `movimientos` la `Idempotency-Key` se consulta
+  antes y se guarda después (`get` y `set` separados, no `SET NX`), así que
+  dos requests simultáneos con la misma clave pueden pasar ambos, y la clave
+  solo se registra si el primer intento llegó a completarse. `POST /productos`
+  no tiene idempotencia: en esa pantalla el frontend solo bloquea el botón y
+  avisa ante fallas de red.
+- **Eventos perdidos si RabbitMQ está caído**: el fallo de publicación se
+  loguea y no se reintenta (no hay patrón outbox), por lo que esa alerta de
+  stock bajo se pierde.
+- **Criterio de stock bajo distinto entre UI y worker**: la tabla de
+  Inventario marca "stock bajo" con `stock_actual <= stock_minimo`, mientras
+  que `worker-alertas` solo alerta con `stock_actual < stock_minimo`. Con el
+  stock igual al mínimo la UI lo marca y no se genera alerta.
+- **Seguridad pensada para desarrollo**: CORS abierto (`allow_origins=["*"]`)
+  en los tres servicios, tokens guardados en `localStorage`, JWT firmados con
+  un secreto compartido (HS256) y credenciales por defecto (RabbitMQ y
+  usuarios de prueba) documentadas.
+- **`fakeredis` en modo local**: cuando se corre sin Docker
+  (`ejecutar_local.ps1`), `auth`, `productos` y `movimientos` usan cada uno su
+  propio `fakeredis` (Redis en memoria por proceso). Al hacer logout, `auth`
+  revoca el access token y el refresh token en su Redis, así que `auth` los
+  rechaza, pero `productos` y `movimientos` consultan el suyo (vacío) y siguen
+  aceptando ese access token hasta que expira (15 min). Con `docker compose`,
+  que usa un Redis compartido, el token queda revocado en los tres servicios.
+  Además, el estado en memoria (bloqueo por intentos de login, rotación de
+  refresh tokens, idempotencia de movimientos) se pierde al reiniciar el
+  servicio.
