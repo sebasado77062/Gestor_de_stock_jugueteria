@@ -322,11 +322,33 @@ function limpiarErroresDeCampo(contenedor) {
 }
 
 /**
- * Muestra cada error del 400 junto a su campo (texto rojo + borde rojo +
- * aria-invalid) y enfoca el primero. Devuelve los mensajes que no se pudieron
- * asociar a ningún campo, para mostrarlos en el aviso general.
+ * Marca un campo como inválido: mensaje en rojo debajo del campo, borde rojo y
+ * aria-invalid. Devuelve true si lo marcó (false si ya tenía un error).
  */
-function mostrarErroresDeCampo(detalles, mapaCampos) {
+function marcarCampoInvalido(input, mensaje) {
+  if (!input || input.classList.contains("campo-invalido")) return false;
+
+  const aviso = document.createElement("small");
+  aviso.className = "error-campo";
+  aviso.id = `error-${input.id}`;
+  aviso.setAttribute("role", "alert");
+  aviso.textContent = mensaje;
+  (input.closest(".dropdown") || input).insertAdjacentElement("afterend", aviso);
+
+  input.dataset.describedbyOriginal = input.getAttribute("aria-describedby") || "";
+  input.setAttribute("aria-describedby", `${aviso.id} ${input.dataset.describedbyOriginal}`.trim());
+  input.setAttribute("aria-invalid", "true");
+  input.classList.add("campo-invalido");
+  return true;
+}
+
+/**
+ * Muestra cada error del 400 junto a su campo y enfoca el primero. Devuelve
+ * los mensajes que no se pudieron asociar a ningún campo, para mostrarlos en
+ * el aviso general. "traducciones" permite reemplazar el texto de un campo
+ * concreto: { nombre_del_campo: (err) => "mensaje" }.
+ */
+function mostrarErroresDeCampo(detalles, mapaCampos, traducciones = {}) {
   const sinCampo = [];
   let primerInvalido = null;
 
@@ -334,26 +356,14 @@ function mostrarErroresDeCampo(detalles, mapaCampos) {
     const nombreCampo = Array.isArray(err.loc) ? err.loc[err.loc.length - 1] : null;
     const idInput = mapaCampos[nombreCampo];
     const input = idInput ? document.getElementById(idInput) : null;
-    const mensaje = traducirErrorValidacion(err);
+    const personalizado = traducciones[nombreCampo] ? traducciones[nombreCampo](err) : null;
+    const mensaje = personalizado || traducirErrorValidacion(err);
 
     if (!input) {
       sinCampo.push(mensaje);
       return;
     }
-    if (input.classList.contains("campo-invalido")) return; // un mensaje por campo
-
-    const aviso = document.createElement("small");
-    aviso.className = "error-campo";
-    aviso.id = `error-${input.id}`;
-    aviso.setAttribute("role", "alert");
-    aviso.textContent = mensaje;
-    (input.closest(".dropdown") || input).insertAdjacentElement("afterend", aviso);
-
-    input.dataset.describedbyOriginal = input.getAttribute("aria-describedby") || "";
-    input.setAttribute("aria-describedby", `${aviso.id} ${input.dataset.describedbyOriginal}`.trim());
-    input.setAttribute("aria-invalid", "true");
-    input.classList.add("campo-invalido");
-    if (!primerInvalido) primerInvalido = input;
+    if (marcarCampoInvalido(input, mensaje) && !primerInvalido) primerInvalido = input;
   });
 
   if (primerInvalido) primerInvalido.focus();
@@ -703,6 +713,46 @@ function restringirInputDni(input) {
     input.value = input.value.replace(/\D/g, "").slice(0, 8);
   });
 }
+
+// --- Tooltips de ayuda de los campos (botón "?") ---
+// Con el mouse se muestran al pasar por encima; con teclado, al enfocar el
+// botón; en pantallas táctiles, al tocarlo (se alterna la clase "abierto").
+// Escape los oculta (el tooltip vuelve a aparecer al volver a entrar o enfocar).
+function cerrarTooltips(excepto) {
+  document.querySelectorAll(".rotulo-fila.abierto").forEach((fila) => {
+    if (fila !== excepto) fila.classList.remove("abierto");
+  });
+}
+
+document.addEventListener("click", (evento) => {
+  const icono = evento.target.closest(".ayuda-icono");
+  if (!icono) return cerrarTooltips();
+  const fila = icono.closest(".rotulo-fila");
+  cerrarTooltips(fila);
+  fila.classList.remove("oculto");
+  fila.classList.toggle("abierto");
+});
+
+document.addEventListener("keydown", (evento) => {
+  if (evento.key !== "Escape") return;
+  document.querySelectorAll(".rotulo-fila").forEach((fila) => {
+    fila.classList.remove("abierto");
+    fila.classList.add("oculto");
+  });
+  if (document.activeElement && document.activeElement.classList.contains("ayuda-icono")) {
+    document.activeElement.blur();
+  }
+});
+
+document.addEventListener("mouseover", (evento) => {
+  const fila = evento.target.closest && evento.target.closest(".rotulo-fila");
+  if (fila) fila.classList.remove("oculto");
+});
+document.addEventListener("focusin", (evento) => {
+  const fila = evento.target.closest && evento.target.closest(".rotulo-fila");
+  if (fila) fila.classList.remove("oculto");
+});
+
 
 // Aplicar restricciones a los inputs del formulario de productos.
 restringirInputNumerico(campoPrecio, { permitirDecimal: true });

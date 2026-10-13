@@ -119,6 +119,7 @@ function seleccionarProducto(idProducto) {
   if (!producto) return;
   productoSeleccionadoId = producto.id_producto;
   inputProducto.value = textoOpcionProducto(producto);
+  limpiarErrorDeCampo(inputProducto);
   ocultarListaProductos();
 }
 
@@ -295,6 +296,15 @@ const MAPA_CAMPOS_MOVIMIENTO = {
   dni_empleado: "mov_dni_empleado",
 };
 
+// Mensajes propios de cada campo cuando el backend responde 400 (reemplazan al texto genérico).
+const TRADUCCIONES_MOVIMIENTO = {
+  categoria_movimiento: () => "Elegí una categoría de la lista.",
+  id_producto: () => "Elegí un producto de la lista de sugerencias.",
+  cantidad_movida: () => "Ingresá una cantidad entera de 1 en adelante.",
+  dni_cliente: () => "El DNI debe tener solo números (hasta 8 dígitos).",
+  dni_empleado: () => "El DNI debe tener solo números (hasta 8 dígitos).",
+};
+
 /** UUID v4 para el header Idempotency-Key (con alternativa si el navegador no tiene randomUUID). */
 function generarClaveIdempotencia() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
@@ -312,6 +322,8 @@ formMovimiento.addEventListener("submit", async (evento) => {
   // Barrera contra envíos duplicados (doble clic, Enter repetido).
   if (envioMovimientoEnCurso) return;
 
+  limpiarErroresDeCampo(formMovimiento);
+
   // Si el usuario escribió el texto exacto de una opción sin hacer clic,
   // se resuelve el id a partir del texto.
   if (!productoSeleccionadoId) {
@@ -321,7 +333,9 @@ formMovimiento.addEventListener("submit", async (evento) => {
   }
 
   if (!productoSeleccionadoId) {
-    mostrarEstado("Elegí un producto del listado de sugerencias.", "error");
+    marcarCampoInvalido(inputProducto, "Elegí un producto de la lista de sugerencias: escribí parte del nombre y tocá una opción.");
+    mostrarEstado("Revisá los campos marcados en rojo.", "error");
+    inputProducto.focus();
     return;
   }
 
@@ -344,7 +358,6 @@ formMovimiento.addEventListener("submit", async (evento) => {
   }
 
   envioMovimientoEnCurso = true;
-  limpiarErroresDeCampo(formMovimiento);
   bloquearBoton(btnGuardarMovimiento, "Registrando...");
   formMovimiento.setAttribute("aria-busy", "true");
 
@@ -374,8 +387,28 @@ formMovimiento.addEventListener("submit", async (evento) => {
       cargarOpcionesDeProductos();
       if (typeof cargarProductos === "function") cargarProductos();
     } else if (resp.status === 400 && Array.isArray(data.detalles)) {
-      const sinCampo = mostrarErroresDeCampo(data.detalles, MAPA_CAMPOS_MOVIMIENTO);
+      const sinCampo = mostrarErroresDeCampo(data.detalles, MAPA_CAMPOS_MOVIMIENTO, TRADUCCIONES_MOVIMIENTO);
       mostrarEstado(sinCampo.length ? sinCampo.join(" ") : "Revisá los campos marcados en rojo.", "error");
+    } else if (resp.status === 409 && /stock insuficiente/i.test(data.mensaje || "")) {
+      // Se refresca el stock real para decirle al usuario cuánto puede mover.
+      await cargarOpcionesDeProductos();
+      const producto = productosDisponibles.find((p) => p.id_producto === payload.id_producto);
+      let ayuda = "Reducí la cantidad.";
+      if (producto) {
+        ayuda = producto.stock_actual > 0
+          ? `Hay ${producto.stock_actual} unidad(es) disponibles de "${producto.nombre}": ingresá ${producto.stock_actual} o menos.`
+          : `No hay unidades disponibles de "${producto.nombre}".`;
+      }
+      marcarCampoInvalido(campoCantidad, ayuda);
+      campoCantidad.focus();
+      mostrarEstado(data.mensaje, "error");
+    } else if (resp.status === 404) {
+      // El producto elegido ya no existe (p. ej. lo eliminaron desde otra pantalla).
+      limpiarSeleccionProducto();
+      await cargarOpcionesDeProductos();
+      marcarCampoInvalido(inputProducto, "Ese producto ya no existe (puede haberse eliminado). Elegí otro de la lista.");
+      inputProducto.focus();
+      mostrarEstado(data.mensaje || "El producto indicado no existe.", "error");
     } else {
       mostrarEstado(data.mensaje || data.detail || "Ocurrió un error al registrar el movimiento.", "error");
     }
@@ -410,3 +443,21 @@ restringirInputDni(campoDniEmpleado);
 
 // Categoría por defecto: Venta.
 reiniciarCategoria();
+
+// Botón de la guía: completa el formulario con un ejemplo real (no registra nada).
+const btnEjemploMovimiento = document.getElementById("btn-ejemplo-movimiento");
+btnEjemploMovimiento.addEventListener("click", async () => {
+  if (!productosDisponibles.length) await cargarOpcionesDeProductos();
+  const producto = productosDisponibles.find((p) => p.stock_actual >= 1) || productosDisponibles[0];
+  if (!producto) {
+    mostrarEstado("Todavía no hay productos: cargá uno en la pestaña Inventario para probar el ejemplo.", "error");
+    return;
+  }
+  limpiarErroresDeCampo(formMovimiento);
+  seleccionarProducto(producto.id_producto);
+  seleccionarCategoria("venta");
+  campoCantidad.value = "1";
+  campoDniCliente.value = "30123456";
+  campoDniEmpleado.value = "28900111";
+  campoCantidad.focus();
+});

@@ -263,6 +263,67 @@
   .guia-tabla{ width:100%; font-size: 13px; margin: 8px 0 12px; }
   .guia-tabla th, .guia-tabla td{ padding: 6px 8px; text-align:left; }
 
+  /* --- Tooltips de ayuda en cada campo --- */
+  .campo{
+    display:flex;
+    flex-direction:column;
+    gap: 5px;
+    min-width: 0;
+  }
+  .rotulo-fila{
+    position: relative;
+    display:flex;
+    align-items:center;
+    gap: 6px;
+  }
+  .ayuda-icono{
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    flex-shrink: 0;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    border-radius: 50%;
+    border: 2px solid var(--turquesa);
+    background: #fff;
+    color: var(--turquesa);
+    font-size: 12px;
+    line-height: 1;
+  }
+  .ayuda-icono:hover, .ayuda-icono:focus-visible{
+    background: var(--turquesa);
+    color: #fff;
+    outline: none;
+  }
+  .tooltip{
+    display:none;
+    position:absolute;
+    left: 0;
+    top: calc(100% + 6px);
+    z-index: 30;
+    width: max-content;
+    max-width: min(260px, 80vw);
+    padding: 9px 12px;
+    border-radius: 10px;
+    background: var(--tinta);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
+    box-shadow: 3px 3px 0 rgba(43,36,64,.25);
+  }
+  .rotulo-fila:hover .tooltip,
+  .ayuda-icono:focus + .tooltip,
+  .rotulo-fila.abierto .tooltip{ display:block; }
+  .rotulo-fila.oculto .tooltip{ display:none; }
+  /* última columna de la grilla: el tooltip se abre hacia la izquierda para no salirse de la pantalla */
+  .campo-grid .campo:nth-child(3n) .tooltip{ left:auto; right:0; }
+  @media (max-width: 720px){
+    .campo-grid .campo:nth-child(3n) .tooltip{ left:0; right:auto; }
+    .campo-grid .campo:nth-child(2n) .tooltip{ left:auto; right:0; }
+  }
+
   footer{
     text-align:center;
     font-size: 12px;
@@ -535,33 +596,63 @@
     <form id="form-producto">
       <input type="hidden" id="id_producto" value="">
       <div class="campo-grid">
-        <label>Nombre
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="nombre">Nombre</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Nombre»?" aria-describedby="tip-nombre">?</button>
+            <span class="tooltip" role="tooltip" id="tip-nombre">Escribí el nombre con el que vas a reconocer el juguete en el inventario y en las ventas. Conviene incluir el modelo o el tamaño. Ej: Muñeca Bebota 40 cm.</span>
+          </div>
           <input type="text" id="nombre" required maxlength="120" placeholder="Ej: Muñeca Bebota" aria-describedby="ayuda-nombre">
           <small class="ayuda-campo" id="ayuda-nombre">Obligatorio, hasta 120 caracteres. Ej: Muñeca Bebota</small>
-        </label>
-        <label>Marca
+        </div>
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="marca">Marca</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Marca»?" aria-describedby="tip-marca">?</button>
+            <span class="tooltip" role="tooltip" id="tip-marca">Fabricante o marca del juguete. Podés dejarlo vacío si no la sabés. Ej: Playkids.</span>
+          </div>
           <input type="text" id="marca" maxlength="80" placeholder="Ej: Playkids" aria-describedby="ayuda-marca">
           <small class="ayuda-campo" id="ayuda-marca">Opcional, hasta 80 caracteres. Ej: Playkids</small>
-        </label>
-        <label>Categoría
+        </div>
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="categoria">Categoría</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Categoría»?" aria-describedby="tip-categoria">?</button>
+            <span class="tooltip" role="tooltip" id="tip-categoria">Tipo o rubro del juguete, para agrupar productos parecidos. Podés dejarlo vacío. Ej: Muñecas, Peluches, Juegos de mesa.</span>
+          </div>
           <input type="text" id="categoria" maxlength="60" placeholder="Ej: Muñecas" aria-describedby="ayuda-categoria">
           <small class="ayuda-campo" id="ayuda-categoria">Opcional, hasta 60 caracteres. Ej: Muñecas</small>
-        </label>
-        <label>Precio de venta ($)
+        </div>
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="precio_venta">Precio de venta ($)</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Precio de venta ($)»?" aria-describedby="tip-precio_venta">?</button>
+            <span class="tooltip" role="tooltip" id="tip-precio_venta">Precio al que vendés cada unidad al público, en pesos. Usá punto para los centavos y no escribas el símbolo $. Ej: 12500.50.</span>
+          </div>
           <input type="number" id="precio_venta" step="0.01" min="0" required placeholder="0.00" inputmode="decimal" aria-describedby="ayuda-precio">
           <small class="ayuda-campo" id="ayuda-precio">Obligatorio. Número sin signos, con hasta 2 decimales. Ej: 12500.50</small>
-        </label>
-        <label id="label-stock-actual">Stock actual
+        </div>
+        <div class="campo" id="label-stock-actual">
+          <div class="rotulo-fila">
+            <label for="stock_actual">Stock actual</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Stock actual»?" aria-describedby="tip-stock_actual">?</button>
+            <span class="tooltip" role="tooltip" id="tip-stock_actual">Cuántas unidades tenés hoy en el depósito al dar de alta el producto. Después no se edita acá: cambia con las ventas, ingresos y demás movimientos. Ej: 20.</span>
+          </div>
           <input type="number" id="stock_actual" min="0" required placeholder="0" inputmode="numeric" aria-describedby="ayuda-stock-actual">
           <small class="ayuda-campo" id="ayuda-stock-actual">Obligatorio al crear (stock inicial). Número entero. Ej: 20</small>
           <small id="nota-stock-actual" class="nota-campo" style="display:none;">
             El stock actual no se edita aquí: se gestiona mediante movimientos de inventario.
           </small>
-        </label>
-        <label>Stock mínimo
+        </div>
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="stock_minimo">Stock mínimo</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Stock mínimo»?" aria-describedby="tip-stock_minimo">?</button>
+            <span class="tooltip" role="tooltip" id="tip-stock_minimo">Cantidad a partir de la cual te conviene reponer. Si el stock está en ese número o por debajo, la tabla lo marca como stock bajo. Ej: 5.</span>
+          </div>
           <input type="number" id="stock_minimo" min="0" required placeholder="0" inputmode="numeric" aria-describedby="ayuda-stock-minimo">
           <small class="ayuda-campo" id="ayuda-stock-minimo">Obligatorio. Referencia para marcar el stock como bajo. Ej: 5</small>
-        </label>
+        </div>
       </div>
       <div class="acciones-form">
         <button type="submit" class="btn-primario" id="btn-guardar">Guardar producto</button>
@@ -612,31 +703,84 @@
 
   <section class="panel">
     <h2>🔄 Registrar movimiento</h2>
+    <details class="guia" id="guia-movimiento">
+      <summary>📘 ¿Cómo registro un movimiento? Guía rápida con ejemplo</summary>
+      <ol>
+        <li>Elegí el <strong>Producto</strong>: escribí parte del nombre y tocá una opción de la lista (tiene que salir de la lista de sugerencias).</li>
+        <li>Elegí la <strong>Categoría</strong>: <strong>Venta</strong> y <strong>Estropeo</strong> restan stock; <strong>Ingreso</strong> y <strong>Devolución</strong> lo suman.</li>
+        <li>Escribí la <strong>Cantidad</strong> (número entero de 1 en adelante). Los DNI son opcionales: solo números, sin puntos.</li>
+        <li>Presioná <strong>Registrar movimiento</strong> <u>una sola vez</u> y esperá el mensaje verde. El stock del producto se actualiza solo: no hace falta editarlo en Inventario.</li>
+        <li>Si aparece <strong>"Stock insuficiente"</strong>, el aviso debajo de Cantidad indica cuántas unidades hay disponibles: ingresá esa cantidad o menos.</li>
+        <li>Si aparece un aviso de conexión o demora, revisá el historial de abajo antes de volver a intentar, para confirmar si el movimiento ya quedó registrado.</li>
+      </ol>
+      <table class="guia-tabla">
+        <thead><tr><th>Campo</th><th>¿Obligatorio?</th><th>Regla</th><th>Ejemplo</th></tr></thead>
+        <tbody>
+          <tr><td>Producto</td><td>Sí</td><td>Elegir una opción de la lista</td><td>#1 — Muñeca Bebota</td></tr>
+          <tr><td>Categoría</td><td>Sí</td><td>Venta, Ingreso, Estropeo o Devolución</td><td>Venta</td></tr>
+          <tr><td>Cantidad</td><td>Sí</td><td>Entero de 1 en adelante; en ventas y estropeos no puede superar el stock</td><td>2</td></tr>
+          <tr><td>DNI cliente</td><td>No</td><td>Solo números, hasta 8 dígitos</td><td>30123456</td></tr>
+          <tr><td>DNI empleado</td><td>No</td><td>Solo números, hasta 8 dígitos</td><td>28900111</td></tr>
+        </tbody>
+      </table>
+      <button type="button" class="btn-secundario btn-chico" id="btn-ejemplo-movimiento">✨ Rellenar el formulario con un ejemplo</button>
+      <small class="ayuda-campo">Solo completa los campos con un producto existente: no se registra nada hasta que presiones "Registrar movimiento".</small>
+    </details>
     <form id="form-movimiento">
       <div class="campo-grid">
-        <label>Producto
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="mov_producto_input">Producto</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Producto»?" aria-describedby="tip-mov_producto_input">?</button>
+            <span class="tooltip" role="tooltip" id="tip-mov_producto_input">Producto que se vendió, ingresó, se estropeó o se devolvió. Escribí parte del nombre y elegí una opción de la lista que aparece.</span>
+          </div>
           <div class="dropdown" id="mov-producto-dropdown">
             <input type="text" id="mov_producto_input" autocomplete="off"
-                  placeholder="Escribí para buscar..." required>
+                  placeholder="Escribí para buscar..." required aria-describedby="ayuda-mov-producto">
             <div class="dropdown-lista" id="mov-productos-lista" hidden></div>
           </div>
-        </label>
-        <label>Categoría
+          <small class="ayuda-campo" id="ayuda-mov-producto">Obligatorio. Elegilo de la lista de sugerencias. Ej: #1 — Muñeca Bebota</small>
+        </div>
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="mov_categoria_input">Categoría</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Categoría»?" aria-describedby="tip-mov_categoria_input">?</button>
+            <span class="tooltip" role="tooltip" id="tip-mov_categoria_input">Tipo de movimiento. Venta y Estropeo descuentan stock; Ingreso y Devolución lo suman.</span>
+          </div>
           <div class="dropdown" id="mov-categoria-dropdown">
             <input type="text" id="mov_categoria_input" readonly
-                  placeholder="Elegí una categoría" required>
+                  placeholder="Elegí una categoría" required aria-describedby="ayuda-mov-categoria">
             <div class="dropdown-lista" id="mov-categorias-lista" hidden></div>
           </div>
-        </label>
-        <label>Cantidad
-          <input type="number" id="mov_cantidad" min="1" required placeholder="1" inputmode="numeric">
-        </label>
-        <label>DNI cliente (opcional)
-          <input type="text" id="mov_dni_cliente" maxlength="8" inputmode="numeric" pattern="[0-9]*" placeholder="Ej: 30123456">
-        </label>
-        <label>DNI empleado (opcional)
-          <input type="text" id="mov_dni_empleado" maxlength="8" inputmode="numeric" pattern="[0-9]*" placeholder="Ej: 28900111">
-        </label>
+          <small class="ayuda-campo" id="ayuda-mov-categoria">Obligatorio. Venta y Estropeo restan stock; Ingreso y Devolución suman.</small>
+        </div>
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="mov_cantidad">Cantidad</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «Cantidad»?" aria-describedby="tip-mov_cantidad">?</button>
+            <span class="tooltip" role="tooltip" id="tip-mov_cantidad">Cuántas unidades se mueven. Siempre un número positivo: si resta o suma lo define la categoría. Ej: 3.</span>
+          </div>
+          <input type="number" id="mov_cantidad" min="1" required placeholder="1" inputmode="numeric" aria-describedby="ayuda-mov-cantidad">
+          <small class="ayuda-campo" id="ayuda-mov-cantidad">Obligatorio. Número entero de 1 en adelante. Ej: 2</small>
+        </div>
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="mov_dni_cliente">DNI cliente (opcional)</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «DNI cliente (opcional)»?" aria-describedby="tip-mov_dni_cliente">?</button>
+            <span class="tooltip" role="tooltip" id="tip-mov_dni_cliente">Opcional. DNI de la persona que compra o devuelve: solo números, sin puntos, hasta 8 dígitos. Ej: 30123456.</span>
+          </div>
+          <input type="text" id="mov_dni_cliente" maxlength="8" inputmode="numeric" pattern="[0-9]*" placeholder="Ej: 30123456" aria-describedby="ayuda-mov-dni-cliente">
+          <small class="ayuda-campo" id="ayuda-mov-dni-cliente">Opcional. Solo números, hasta 8 dígitos. Ej: 30123456</small>
+        </div>
+        <div class="campo">
+          <div class="rotulo-fila">
+            <label for="mov_dni_empleado">DNI empleado (opcional)</label>
+            <button type="button" class="ayuda-icono" aria-label="¿Qué se ingresa en «DNI empleado (opcional)»?" aria-describedby="tip-mov_dni_empleado">?</button>
+            <span class="tooltip" role="tooltip" id="tip-mov_dni_empleado">Opcional. DNI del empleado que registra la operación: solo números, sin puntos, hasta 8 dígitos. Ej: 28900111.</span>
+          </div>
+          <input type="text" id="mov_dni_empleado" maxlength="8" inputmode="numeric" pattern="[0-9]*" placeholder="Ej: 28900111" aria-describedby="ayuda-mov-dni-empleado">
+          <small class="ayuda-campo" id="ayuda-mov-dni-empleado">Opcional. Solo números, hasta 8 dígitos. Ej: 28900111</small>
+        </div>
       </div>
       <div class="acciones-form">
         <button type="submit" class="btn-primario" id="btn-guardar-movimiento">Registrar movimiento</button>
