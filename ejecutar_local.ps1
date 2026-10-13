@@ -1,5 +1,7 @@
-# Levanta auth + productos + frontend en Windows SIN Docker y SIN Redis
+# Levanta auth + productos + movimientos + frontend en Windows SIN Docker y SIN Redis
 # (usa un Redis en memoria). Requiere Python 3.10 a 3.13 (recomendado 3.12).
+# Nota: RabbitMQ y el worker de alertas NO corren en este modo. Los movimientos se
+# registran igual (la publicacion del evento falla y queda solo en el log).
 #
 # Uso (desde la carpeta del proyecto ya descomprimida, en PowerShell):
 #   powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1
@@ -45,7 +47,7 @@ if (-not $py) {
 Write-Host "Usando Python: $py"
 
 # Puertos que necesita el proyecto
-foreach ($p in 8000, 8001, 8080) {
+foreach ($p in 8000, 8001, 8002, 8080) {
     $uso = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
     if ($uso) { Fallar "El puerto $p ya esta en uso. Cerra lo que lo use (o una ejecucion anterior) y reintenta." }
 }
@@ -70,12 +72,14 @@ function Preparar-Servicio($nombre) {
 
 Preparar-Servicio "auth"
 Preparar-Servicio "productos"
+Preparar-Servicio "movimientos"
 
 # config.js del frontend (URLs + botones de acceso rapido)
 @'
 window.APP_CONFIG = {
   PRODUCTOS_API_URL: "http://localhost:8000",
   AUTH_API_URL: "http://localhost:8001",
+  MOVIMIENTOS_API_URL: "http://localhost:8002",
   USUARIOS_PRUEBA: {
     habilitado: true,
     admin: { email: "admin@test.com", password: "admin12345" },
@@ -94,14 +98,17 @@ $cmdAuth = "$comunes " +
 
 $cmdProductos = "$comunes cd '$raiz\services\productos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8000"
 
+$cmdMovimientos = "$comunes `$env:PRODUCTOS_SERVICE_URL='http://localhost:8000'; cd '$raiz\services\movimientos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8002"
+
 $cmdFront = "cd '$raiz\frontend'; & '$py' -m http.server 8080"
 
 # Cada servicio en su propia ventana (cerrala para detenerlo)
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdAuth
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdProductos
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdMovimientos
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmdFront
 
-# Espera a que auth y productos respondan antes de abrir el navegador
+# Espera a que auth, productos y movimientos respondan antes de abrir el navegador
 Write-Host "Esperando a que los servicios arranquen..."
 $listo = $false
 foreach ($i in 1..20) {
@@ -109,6 +116,7 @@ foreach ($i in 1..20) {
     try {
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://localhost:8001/health" | Out-Null
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://localhost:8000/health" | Out-Null
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://localhost:8002/health" | Out-Null
         $listo = $true
         break
     } catch { }
@@ -122,5 +130,7 @@ if ($listo) {
 }
 Write-Host "  Auth (Swagger):      http://localhost:8001/docs"
 Write-Host "  Productos (Swagger): http://localhost:8000/docs"
+Write-Host "  Movimientos (Swagger): http://localhost:8002/docs"
+Write-Host "  (Sin RabbitMQ: los avisos de stock bajo no se procesan; es normal ver un error de AMQP en la ventana de Movimientos)" -ForegroundColor Yellow
 Write-Host "  Usuarios de prueba:  admin@test.com / admin12345  |  empleado@test.com / empleado123"
 Start-Process "http://localhost:8080"
