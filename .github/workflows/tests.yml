@@ -1,0 +1,76 @@
+name: Tests
+
+# Corre los tests de cada servicio en cada push (a cualquier rama, no solo main)
+# y a pedido desde la pestaña Actions ("Run workflow").
+on:
+  push:
+  workflow_dispatch:
+
+# Si se hace un push nuevo a la misma rama mientras corre el anterior,
+# se cancela el viejo (no tiene sentido terminar de testear código ya viejo).
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      # Que falle un servicio no cancela a los demás: se ve qué falla en cada uno.
+      fail-fast: false
+      matrix:
+        service: [auth, productos, movimientos, worker-alertas]
+
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+
+    # Redis real: lo necesita solo la suite de auth (blacklist, bloqueo por
+    # intentos fallidos, rotación de refresh con concurrencia real). En los
+    # demás servicios queda levantado pero sin usarse.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # Valores de prueba, NO son secretos reales (los mismos que usan los conftest).
+      AUTH_SECRET_KEY: clave-de-test-no-usar-en-produccion
+      REDIS_URL: redis://localhost:6379/15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # misma versión que los Dockerfiles
+          cache: pip
+          cache-dependency-path: services/${{ matrix.service }}/requirements*.txt
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          # auth y productos separan las deps de test en requirements-dev.txt;
+          # movimientos y worker-alertas ya traen pytest en requirements.txt.
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Correr tests
+        run: pytest
