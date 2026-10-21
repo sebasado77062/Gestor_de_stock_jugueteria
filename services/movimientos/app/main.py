@@ -26,6 +26,27 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
+# Encabezados de seguridad (se agregan a TODA respuesta, incluidos los errores)
+# ---------------------------------------------------------------------------
+ENCABEZADOS_SEGURIDAD = {
+    # Anti-sniffing: el navegador respeta el Content-Type declarado y no "adivina".
+    "X-Content-Type-Options": "nosniff",
+    # Anti-clickjacking: ningún sitio ajeno puede mostrar esta respuesta en un iframe.
+    "X-Frame-Options": "DENY",
+    # Equivalente moderno de X-Frame-Options (los navegadores nuevos lo priorizan).
+    "Content-Security-Policy": "frame-ancestors 'none'",
+}
+
+
+@app.middleware("http")
+async def agregar_encabezados_seguridad(request: Request, call_next):
+    response = await call_next(request)
+    for nombre, valor in ENCABEZADOS_SEGURIDAD.items():
+        response.headers[nombre] = valor
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Middleware centralizado de manejo de errores (mismo patrón que Productos)
 # ---------------------------------------------------------------------------
 
@@ -57,6 +78,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"error": True, "mensaje": "Error interno del servidor."},
+        # Este 500 lo arma la capa más externa de Starlette, por fuera del
+        # middleware de arriba: los encabezados se agregan acá a mano.
+        headers=ENCABEZADOS_SEGURIDAD,
     )
 
 
