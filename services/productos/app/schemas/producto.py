@@ -13,7 +13,36 @@ class ProductoBase(BaseModel):
     categoria: Optional[str] = Field(None, max_length=60)
 
 
-class ProductoCreate(ProductoBase):
+# Caracteres que un texto de producto (nombre, marca, categoría) no puede
+# contener, porque son los típicos de una inyección:
+#   < >        HTML / script (XSS)
+#   ; =        encadenado de SQL / atributos HTML inyectados
+#   ` \         comandos y escapes
+#   { }        plantillas ({{...}}, ${...})
+#   control    byte nulo, saltos de línea (CRLF), tabulaciones
+# Se permiten letras con tildes y ñ, números, espacios y la puntuación de uso
+# normal en un catálogo (. , - ' & / ( ) + : % # ° ® ™ ! ?).
+PATRON_TEXTO_SEGURO = r"^[^<>;=`\\{}\x00-\x1f\x7f]*$"
+
+
+class ProductoEntrada(ProductoBase):
+    """
+    Base de los schemas de ENTRADA (alta y edición): suma el filtro de
+    caracteres peligrosos a los tres campos de texto libre.
+
+    A propósito NO se aplica en ProductoBase ni en ProductoOut: la salida no
+    se filtra, para que un dato viejo ya guardado nunca haga fallar un GET
+    con un 500. El filtro actúa solo sobre lo que entra por la API.
+    """
+    nombre: str = Field(
+        ..., min_length=1, max_length=120, pattern=PATRON_TEXTO_SEGURO,
+        description="Nombre del producto",
+    )
+    marca: Optional[str] = Field(None, max_length=80, pattern=PATRON_TEXTO_SEGURO)
+    categoria: Optional[str] = Field(None, max_length=60, pattern=PATRON_TEXTO_SEGURO)
+
+
+class ProductoCreate(ProductoEntrada):
     """
     Schema usado en el POST /api/v1/productos (creación).
 
@@ -26,7 +55,7 @@ class ProductoCreate(ProductoBase):
     stock_actual: int = Field(0, ge=0, description="Stock inicial al crear el producto")
 
 
-class ProductoUpdate(ProductoBase):
+class ProductoUpdate(ProductoEntrada):
     """
     Schema usado en el PUT /api/v1/productos/{id} (actualización).
 
