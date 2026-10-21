@@ -1,0 +1,36 @@
+name: Medición pruebas
+on: workflow_dispatch
+
+jobs:
+  medir:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [productos, movimientos]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    env:
+      AUTH_SECRET_KEY: clave-de-test-no-usar-en-producción
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/${{ matrix.service }}/requirements*.txt
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      - name: Ejecutar pruebas
+        run: pytest tests/tests_bateria_minima.py -v -s --durations=0
+      
