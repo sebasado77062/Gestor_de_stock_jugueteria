@@ -35,5 +35,4 @@ jobs:
           fi
 
       - name: Ejecutar pruebas
-        run: pytest tests/tests_bateria_minima.py -v -s --durations=0
-      
+        run: pytest tests/test_bateria_minima.py -v -s --durations=0
