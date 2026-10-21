@@ -1,5 +1,8 @@
 name: Medición pruebas
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
 
 jobs:
   medir:
