@@ -236,25 +236,27 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 20
+                "pattern": "^[0-9]{1,8}$"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Dni Cliente"
+            "title": "Dni Cliente",
+            "description": "DNI: solo dígitos, hasta 8"
           },
           "dni_empleado": {
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 20
+                "pattern": "^[0-9]{1,8}$"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Dni Empleado"
+            "title": "Dni Empleado",
+            "description": "DNI: solo dígitos, hasta 8"
           }
         },
         "type": "object",
