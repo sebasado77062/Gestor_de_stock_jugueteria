@@ -1,12 +1,15 @@
 """
 Rutas del servicio auth.
 """
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.database.db import get_db
 from app.core.dependencies import requerir_rol
+from app.core.redis_client import token_esta_revocado
 from app.schemas.usuario import (
     UsuarioCreate,
     UsuarioOut,
@@ -93,6 +96,27 @@ def logout(
     refresh_token = datos.refresh_token if datos else None
     auth_service.logout(credenciales.credentials, refresh_token)
     return None
+
+
+@router.get("/tokens/{jti}/revocado", status_code=status.HTTP_200_OK)
+def consultar_revocacion(jti: str):
+    """
+    Informa si un access token (identificado por su jti) fue revocado con logout.
+
+    SOLO PARA EL MODO LOCAL SIN DOCKER (ver ejecutar_local.ps1). Con Docker,
+    productos y movimientos comparten el mismo Redis que auth y consultan la
+    blacklist directamente. Sin Redis compartido (cada proceso con su
+    fakeredis), no ven las revocaciones de auth: en ese modo le preguntan a
+    este endpoint. Por eso está deshabilitado por defecto (responde 404) y se
+    activa con HABILITAR_CONSULTA_REVOCACION=true.
+
+    Es público a propósito (los servicios no tienen credenciales propias): el
+    jti es un UUID aleatorio y la respuesta es un solo booleano, así que no
+    revela nada a quien no tenga ya el token.
+    """
+    if os.getenv("HABILITAR_CONSULTA_REVOCACION", "false").lower() != "true":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    return {"jti": jti, "revocado": token_esta_revocado(jti)}
 
 
 @router.get("/me", response_model=UsuarioOut, status_code=status.HTTP_200_OK)

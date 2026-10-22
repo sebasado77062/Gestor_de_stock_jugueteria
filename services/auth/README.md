@@ -32,6 +32,7 @@ Prefijo: `/api/v1/auth`.
 | `POST` | `/refresh` | Renueva el access token a partir de un refresh token |
 | `POST` | `/logout` | Revoca los tokens actuales (agrega el `jti` a una blacklist en Redis) |
 | `GET` | `/me` | Datos del usuario logueado (requiere access token válido) |
+| `GET` | `/tokens/{jti}/revocado` | **Solo modo local sin Docker.** Dice si un access token fue revocado. Responde 404 salvo que `HABILITAR_CONSULTA_REVOCACION=true` |
 | `GET` | `/health` | Healthcheck |
 
 ### Login
@@ -91,6 +92,16 @@ Si Redis está caído, `productos` y `movimientos` fallan hacia "no revocado"
 (fail-open): siguen validando firma y expiración, pero pierden la capacidad
 de rechazar tokens revocados antes de que expiren solos.
 
+**Modo local sin Docker.** Con `REDIS_URL=memory://` cada servicio tiene su
+propio Redis en memoria, así que `productos` y `movimientos` no verían los
+tokens que `auth` revoca. Para que el logout sea efectivo igual, en ese modo
+(`AUTH_SERVICE_URL` definida) le preguntan a `auth`
+`GET /api/v1/auth/tokens/{jti}/revocado`. El endpoint está deshabilitado por
+defecto (404) y es público a propósito, porque los servicios no tienen
+credenciales propias: el `jti` es un UUID aleatorio y la respuesta es un solo
+booleano, así que no revela nada a quien no tenga ya el token.
+`ejecutar_local.ps1` configura las variables necesarias.
+
 ## Roles
 
 | Rol | Descripción |
@@ -125,6 +136,7 @@ los usuarios y el frontend deja de recibir las credenciales.
 | `DATABASE_URL` | `sqlite:///./data/auth.db` | Base propia de Auth |
 | `AUTH_SECRET_KEY` | — (obligatoria) | Secreto compartido con los demás servicios para firmar/validar JWT |
 | `REDIS_URL` | `redis://localhost:6379/0` | Blacklist de tokens revocados. `memory://` para modo local |
+| `HABILITAR_CONSULTA_REVOCACION` | `false` | Habilita `GET /api/v1/auth/tokens/{jti}/revocado`. Solo para el modo local sin Docker (ver abajo); con Docker no hace falta |
 | `HABILITAR_USUARIOS_PRUEBA` | `true` | Crea los usuarios de prueba al arrancar (solo desarrollo) |
 | `PRUEBA_ADMIN_EMAIL` / `PRUEBA_ADMIN_PASSWORD` | `admin@test.com` / `admin12345` | Credenciales del admin de prueba |
 | `PRUEBA_EMPLEADO_EMAIL` / `PRUEBA_EMPLEADO_PASSWORD` | `empleado@test.com` / `empleado123` | Credenciales del empleado de prueba |
@@ -154,9 +166,13 @@ Los tests cubren:
 - **Refresh** (`test_refresh.py`): rotación del refresh token (el anterior
   deja de funcionar), refresh inválido o expirado.
 - **Roles** (`test_roles.py`): cada endpoint respeta los roles permitidos.
+- **Consulta de revocación** (`test_consulta_revocacion.py`): deshabilitado por
+  defecto, y tras un logout el `jti` figura como revocado.
 
-Los tests corren contra una base SQLite en memoria y un Redis en memoria
-(`fakeredis`), aislados entre sí.
+Los tests corren contra una base SQLite en memoria y un **Redis real** (base 15,
+que se vacía antes de cada test; ver `tests/conftest.py`), aislados entre sí. En
+CI se levanta como servicio. No correrlos contra el Redis de `docker compose`
+(base 0), porque se borraría la blacklist de tokens.
 
 ## Contrato de la API
 

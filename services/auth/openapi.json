@@ -137,6 +137,47 @@
         ]
       }
     },
+    "/api/v1/auth/tokens/{jti}/revocado": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Consultar Revocacion",
+        "description": "Informa si un access token (identificado por su jti) fue revocado con logout.\n\nSOLO PARA EL MODO LOCAL SIN DOCKER (ver ejecutar_local.ps1). Con Docker,\nproductos y movimientos comparten el mismo Redis que auth y consultan la\nblacklist directamente. Sin Redis compartido (cada proceso con su\nfakeredis), no ven las revocaciones de auth: en ese modo le preguntan a\neste endpoint. Por eso está deshabilitado por defecto (responde 404) y se\nactiva con HABILITAR_CONSULTA_REVOCACION=true.\n\nEs público a propósito (los servicios no tienen credenciales propias): el\njti es un UUID aleatorio y la respuesta es un solo booleano, así que no\nrevela nada a quien no tenga ya el token.",
+        "operationId": "consultar_revocacion_api_v1_auth_tokens__jti__revocado_get",
+        "parameters": [
+          {
+            "name": "jti",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Jti"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/me": {
       "get": {
         "tags": [
