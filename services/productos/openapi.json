@@ -536,6 +536,7 @@
             "type": "string",
             "maxLength": 120,
             "minLength": 1,
+            "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$",
             "title": "Nombre",
             "description": "Nombre del producto"
           },
@@ -543,7 +544,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 80
+                "maxLength": 80,
+                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
               },
               {
                 "type": "null"
@@ -567,7 +569,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 60
+                "maxLength": 60,
+                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
               },
               {
                 "type": "null"
@@ -668,6 +671,7 @@
             "type": "string",
             "maxLength": 120,
             "minLength": 1,
+            "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$",
             "title": "Nombre",
             "description": "Nombre del producto"
           },
@@ -675,7 +679,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 80
+                "maxLength": 80,
+                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
               },
               {
                 "type": "null"
@@ -699,7 +704,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 60
+                "maxLength": 60,
+                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
               },
               {
                 "type": "null"

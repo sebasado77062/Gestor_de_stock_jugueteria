@@ -149,6 +149,22 @@ hasta 60 s); sobrevive a reinicios del servicio. La entrega es *at-least-once*:
 el worker es idempotente por `id_movimiento`. Detalles y garantías en
 `EVENTOS.md`.
 
+## Validación de entrada y encabezados de seguridad
+
+**Validación.** `dni_cliente` y `dni_empleado` aceptan solo de 1 a 8 dígitos
+(`^[0-9]{1,8}$`), el mismo criterio que ya aplica el formulario del panel (o
+`null` si no se informa). Cualquier otro valor, incluidos los caracteres de
+inyección, devuelve `400` con el formato de error del proyecto y no llega a
+`productos` ni a la base. `categoria_movimiento` y `cantidad_movida` ya
+rechazaban valores fuera de su tipo.
+
+**Headers.** Un middleware agrega `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY` y `Content-Security-Policy: frame-ancestors 'none'` a
+toda respuesta, incluidos los errores. El `500` inesperado lo arma Starlette
+por fuera de los middlewares, así que su handler los recibe explícitos.
+
+Ambos puntos están cubiertos por `tests/test_bateria_minima.py`.
+
 ## Variables de entorno
 
 | Variable | Default | Descripción |
@@ -180,6 +196,9 @@ pip install -r requirements.txt
 pytest
 ```
 
+(En Windows, `.\ejecutar_local.ps1 -Tests` desde la raíz del repositorio hace
+todo esto sola; `-Bateria` corre solo `test_bateria_minima.py`.)
+
 Los tests no requieren Productos, Redis ni RabbitMQ corriendo: Productos se
 reemplaza por un doble (`ProductosFalso`, en `tests/conftest.py`) que reproduce
 su idempotencia por clave, y RabbitMQ por un publicador falso.
@@ -205,3 +224,11 @@ Cubren:
 - **API HTTP** (`test_api_movimientos.py`): códigos de estado, mensajes,
   `Idempotency-Key`, estado `pendiente`, conteo por producto y reconciliación
   (solo admin).
+- **Batería de carga y blindaje** (`test_bateria_minima.py`, 13 tests, con las
+  fixtures de `conftest.py`): la **carga concurrente** (20 `POST /movimientos`
+  simultáneos: se registran 20 movimientos distintos, se piden 20 ajustes a
+  Productos, e imprime latencia media y tasa de éxito); la **sanitización** (9
+  payloads maliciosos sobre los DNI, la categoría y la cantidad devuelven 400,
+  no llegan a Productos ni se guardan; un control confirma que un DNI válido
+  y un `null` se aceptan); y los **headers de seguridad** en respuestas 200,
+  201, 400, 404 y 500.

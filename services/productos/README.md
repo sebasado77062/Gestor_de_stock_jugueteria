@@ -213,8 +213,28 @@ de llegada ni el paralelismo.
   `"sin_stock"`, y el stock nunca queda negativo).
 
 ```bash
-docker compose exec productos pytest tests/test_concurrencia_stock.py -v
+cd services/productos
+pip install -r requirements-dev.txt
+python -m pytest tests/test_concurrencia_stock.py -v
 ```
+
+## Validación de entrada y encabezados de seguridad
+
+**Validación.** Los campos de texto libre (`nombre`, `marca`, `categoria`) no
+pueden contener `<` `>` `;` `=` `{` `}` `\`, el acento grave ni caracteres de
+control (byte nulo, saltos de línea, tabulaciones). Un valor así devuelve
+`400` con el formato de error del proyecto, antes de tocar la base. Se
+aceptan tildes, ñ y la puntuación habitual (`. , - ' & / ( ) + : % # ° ® ™ ! ?`).
+El filtro está en `ProductoEntrada` (base de `ProductoCreate` y
+`ProductoUpdate`) y **no** en `ProductoOut`: así un producto guardado antes de
+este control sigue listándose sin dar un `500`.
+
+**Headers.** Un middleware agrega `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY` y `Content-Security-Policy: frame-ancestors 'none'` a
+toda respuesta, incluidos los errores. El `500` inesperado lo arma Starlette
+por fuera de los middlewares, así que su handler los recibe explícitos.
+
+Ambos puntos están cubiertos por `tests/test_bateria_minima.py`.
 
 ## Datos de prueba (`/api/v1/dev/seed-productos`)
 
@@ -251,6 +271,15 @@ de acceso a datos está detrás de SQLAlchemy, así que migrar a Postgres en
 el futuro implica cambiar `DATABASE_URL` y agregar el driver
 correspondiente al `requirements.txt`, sin tocar modelos, schemas ni
 lógica de negocio.
+- **El filtro de caracteres es una lista de prohibidos, no una lista
+  blanca**: es una capa adicional; la defensa principal contra la inyección
+  SQL son las consultas con parámetros enlazados de SQLAlchemy.
+- **Pool de conexiones por defecto de SQLAlchemy (5 más 10 de desborde)**:
+  en una prueba local con 150 ventas simultáneas y stock suficiente, la
+  mayoría de las peticiones no obtuvo respuesta (`QueuePool limit of size 5
+  overflow 10 reached`); con `pool_size=20` y `max_overflow=60` en
+  `create_engine` se resolvieron todas. Ese ajuste todavía no está aplicado,
+  y la prueba de 20 peticiones de la batería no llega a exponerlo.
 
 ## Variables de entorno
 
@@ -294,8 +323,12 @@ lógica de negocio.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+python -m pytest
 ```
+
+(En Windows, `.\ejecutar_local.ps1 -Tests` desde la raíz del repositorio hace
+todo esto sola; `-Bateria` corre solo `test_bateria_minima.py`.) Los tests no
+están dentro de la imagen de Docker.
 
 La suite cubre:
 - **CRUD** (`tests/test_crud_productos.py`): camino feliz de las 5
@@ -326,8 +359,20 @@ La suite cubre:
 - **Integración** (`tests/test_integracion.py`): flujos completos
   encadenados (crear → editar → listar → eliminar) y healthcheck.
 
-Cada test corre contra una base SQLite en memoria aislada (no comparte
-estado entre tests, no toca el filesystem ni la base real del contenedor).
+- **Batería de carga y blindaje** (`tests/test_bateria_minima.py`, 18 tests):
+  un test unitario de la regla de negocio, uno de integración (201 con el
+  schema JSON) y uno de datos corruptos (400); la **carga concurrente** (20
+  `PATCH /ajustar-stock` simultáneos sobre un producto con stock 20: las 20
+  salen bien, el stock termina en 0, e imprime latencia media y tasa de
+  éxito); la **sanitización** (10 payloads maliciosos en nombre, marca,
+  categoría y precio devuelven 400 y no se guardan; la edición también los
+  rechaza; un control confirma que nombres reales como `Autito 1/64 (Hot
+  Wheels®)` se aceptan); y los **headers de seguridad** en respuestas 200,
+  201, 400, 404 y 500.
+
+Cada test corre contra una base SQLite aislada (no comparte estado entre
+tests ni toca la base real del contenedor): en memoria, salvo el test de
+carga, que usa un archivo temporal porque necesita varias conexiones a la vez.
 La autenticación se simula con overrides de dependencias (ver
 `tests/conftest.py`), salvo los tests específicos de auth, que usan el
 mecanismo real con JWT firmados.

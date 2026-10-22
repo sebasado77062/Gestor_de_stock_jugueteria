@@ -211,6 +211,45 @@ Decisiones de diseño:
   refresh token ante un 401 y, si la renovación falla, vuelve al login. Los
   tokens se guardan en `localStorage`.
 
+## Seguridad de entrada y encabezados
+
+`productos` y `movimientos` filtran lo que entra y marcan todo lo que sale.
+La validación vive en los schemas de Pydantic, antes de tocar la base de
+datos o llamar a otro servicio; los headers los agrega un middleware.
+
+```mermaid
+flowchart LR
+    C["Cliente"] --> R["Router"]
+    R --> V{"Schema válido?"}
+    V -- "Sí" --> S["Servicio y base de datos"]
+    V -- "No" --> E["Handler: 400 con el formato de error del proyecto"]
+    S --> OK["Respuesta 2xx"]
+    OK --> M["Middleware: agrega los headers de seguridad"]
+    E --> M
+    M --> C
+```
+
+- **Validación de entrada.** `productos` rechaza en nombre, marca y categoría
+  los caracteres `<` `>` `;` `=` `{` `}` `\`, el acento grave y los de control;
+  `movimientos` exige que los DNI sean de 1 a 8 dígitos. El filtro es una
+  capa adicional: la defensa principal contra la inyección SQL son las
+  consultas con parámetros enlazados de SQLAlchemy. En `productos` se
+  aplica solo a los schemas de entrada (`ProductoEntrada`), no a
+  `ProductoOut`, para que un dato guardado antes del filtro no rompa un `GET`.
+- **Headers.** `X-Content-Type-Options: nosniff` (anti-sniffing),
+  `X-Frame-Options: DENY` y `Content-Security-Policy: frame-ancestors 'none'`
+  (anti-clickjacking) en **toda** respuesta, errores incluidos.
+- **El `500` inesperado es un caso aparte.** Lo arma la capa más externa de
+  Starlette, por fuera de los middlewares, así que el middleware no lo
+  alcanza. Por eso el handler de excepciones recibe los headers de forma
+  explícita. Un test fuerza una falla interna y verifica que el `500` también
+  los lleve.
+- **Alcance.** `auth` y el frontend (nginx) todavía no definen estos headers.
+
+Los tests de esta sección están en `tests/test_bateria_minima.py` de cada
+servicio (ver "Batería de carga y blindaje de endpoints" en el `README.md`
+raíz).
+
 ## Ejecución local sin Docker (`ejecutar_local.ps1`)
 
 Para Windows existe un script que levanta el sistema sin Docker. Cada
@@ -237,6 +276,20 @@ propio Redis en memoria, `productos` y `movimientos` le preguntan a `auth`
 `HABILITAR_CONSULTA_REVOCACION=true`) si el token fue revocado. Es una llamada
 HTTP extra por request, solo en este modo; si `auth` no responde se deja pasar
 el token (mismo criterio fail-open que con Redis).
+
+Además del modo normal, el script prepara y corre los tests sin Docker, sin
+Redis real y sin activar entornos virtuales a mano:
+
+| Opción | Qué hace |
+|---|---|
+| (ninguna) | Levanta el sistema y abre el navegador |
+| `-Tests` | Corre los tests de `auth`, `productos`, `movimientos` y `worker-alertas` y muestra un resumen; no levanta nada |
+| `-Bateria` | Corre solo la batería de carga, sanitización y headers de `productos` y `movimientos` |
+| `-Todo` | Corre todos los tests y, si pasan, levanta el sistema |
+
+Cada servicio usa el Python de su propio entorno (`venv`), con las
+dependencias de test incluidas (`requirements-dev.txt` en `auth` y
+`productos`). La suite de `auth` corre con `REDIS_URL=memory://`.
 
 ## Flujo del evento `movimiento.registrado`
 
@@ -367,10 +420,19 @@ A nivel de sistema completo, las más relevantes hoy son:
   no el del instante del movimiento (no se conserva).
 - **`POST /productos` no tiene idempotencia**: en esa pantalla el frontend solo
   bloquea el botón y avisa ante fallas de red.
+- **Pool de conexiones por defecto**: SQLAlchemy abre hasta 15 conexiones
+  por servicio (5 más 10 de desborde). En una prueba local con 150 ventas
+  simultáneas y stock suficiente, `productos` dejó sin respuesta a la mayoría
+  de las peticiones (`QueuePool limit of size 5 overflow 10 reached`);
+  con `pool_size=20` y `max_overflow=60` en `create_engine` se resolvieron
+  todas. Ese ajuste todavía no está aplicado, y la prueba de 20 peticiones
+  de la batería no llega a exponerlo.
 - **Seguridad pensada para desarrollo**: CORS abierto (`allow_origins=["*"]`)
   en los tres servicios, tokens guardados en `localStorage`, JWT firmados con
   un secreto compartido (HS256) y credenciales por defecto (RabbitMQ y
-  usuarios de prueba) documentadas.
+  usuarios de prueba) documentadas. Sí hay validación de entrada y headers
+  de seguridad en `productos` y `movimientos` (ver "Seguridad de entrada y
+  encabezados"); `auth` y el frontend todavía no los tienen.
 - **Modo local sin Docker** (`ejecutar_local.ps1`): sin RabbitMQ ni worker (los
   eventos quedan en el outbox), con un Redis en memoria por servicio. El logout
   sí es efectivo (se consulta a `auth`), a costa de una llamada HTTP por request;

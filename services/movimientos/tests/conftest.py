@@ -151,3 +151,85 @@ class PublicadorFalso:
 @pytest.fixture()
 def rabbit():
     return PublicadorFalso()
+
+
+# ---------------------------------------------------------------------------
+# Fixtures de tests/test_bateria_minima.py (tests HTTP con la autenticación
+# simulada). Se apoyan en las de arriba: la base temporal (SessionLocal) y el
+# doble de Productos (ProductosFalso).
+# ---------------------------------------------------------------------------
+PAYLOAD_ADMIN_FALSO = {
+    "sub": "1",
+    "email": "admin@test.com",
+    "rol": "admin",
+    "tipo": "access",
+    "jti": "jti-fake-admin",
+}
+
+
+@pytest.fixture()
+def session_factory(SessionLocal):
+    """Fábrica de sesiones sobre la base SQLite temporal (alias de SessionLocal)."""
+    return SessionLocal
+
+
+@pytest.fixture()
+def productos_mock(monkeypatch):
+    """
+    Productos acepta los ajustes (con stock de sobra). Devuelve un mock que
+    envuelve al doble `ProductosFalso`, para poder contar o inspeccionar las
+    llamadas (`call_count`, `assert_not_called()`).
+    """
+    from unittest.mock import MagicMock
+
+    from app.clients import productos_client
+
+    falso = ProductosFalso(stock_inicial={1: 100_000})
+    mock = MagicMock(wraps=falso.ajustar_stock)
+    monkeypatch.setattr(productos_client, "ajustar_stock", mock)
+    return mock
+
+
+@pytest.fixture()
+def client(SessionLocal, productos_mock, monkeypatch):
+    """
+    TestClient de la app real, con una sesión de base NUEVA por request (como
+    en producción) y la autenticación simulada como admin (sin JWT reales ni
+    consulta de revocación).
+    """
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+    from app.core.jwt_auth import obtener_token_y_payload
+    from app.database.db import get_db
+    from app.main import app
+
+    # No tocar la base real al arrancar.
+    monkeypatch.setattr(main_module, "inicializar_base", lambda: None)
+
+    def override_get_db():
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[obtener_token_y_payload] = lambda: (TOKEN_FALSO, PAYLOAD_ADMIN_FALSO)
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def movimiento_payload():
+    """Payload válido mínimo para registrar un movimiento."""
+    return {
+        "categoria_movimiento": "venta",
+        "cantidad_movida": 2,
+        "id_producto": 1,
+        "dni_cliente": "30123456",
+        "dni_empleado": "20111222",
+    }

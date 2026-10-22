@@ -12,7 +12,7 @@ administración (HTML/JS) servido con nginx.
 ├── .env.example
 ├── .github/workflows/     # CI: corre los tests de los 4 servicios en cada push
 ├── ejecutar_docker.ps1    # Windows: levanta TODO con Docker Compose (crea .env y el secreto si faltan)
-├── ejecutar_local.ps1     # Windows, sin Docker: levanta auth, productos, movimientos y frontend
+├── ejecutar_local.ps1     # Windows, sin Docker: levanta el sistema o corre los tests (-Tests, -Bateria, -Todo)
 ├── docs/
 │   └── ARQUITECTURA.md    # Diagramas (servicios, capas, flujos, consistencia, concurrencia)
 ├── services/
@@ -230,9 +230,15 @@ curl.exe http://localhost:8003/health
 La concurrencia se verifica con los tests, que simulan ventas simultáneas
 reales con hilos:
 
-```bash
-docker compose exec productos pytest tests/test_concurrencia_stock.py -v
+```powershell
+cd services\productos
+pip install -r requirements-dev.txt
+python -m pytest tests/test_concurrencia_stock.py -v
 ```
+
+(Los tests no están dentro de las imágenes de Docker de `productos`, por eso se
+corren en la máquina local. `.\ejecutar_local.ps1 -Tests` prepara todo y corre la
+suite completa.)
 
 Esperado: los 2 tests pasan. Uno demuestra el problema (sobreventa con un
 ajuste no atómico), el otro demuestra que el ajuste atómico la previene.
@@ -271,6 +277,10 @@ Verificaciones del panel (ver la sección "Interfaz del panel"):
 4. **Stock insuficiente:** en Movimientos, registrar una venta con más
    unidades que el stock. El aviso bajo *Cantidad* indica cuántas hay
    disponibles.
+5. **Caracteres no permitidos:** en Inventario, escribir `<script>` en
+   *Nombre* y guardar. El servidor responde 400 y el mensaje "Contiene
+   caracteres no permitidos" aparece **debajo del campo** (ver "Seguridad de
+   las APIs").
 
 ### Paso 8 — Probar que el evento no se pierde con RabbitMQ caído (outbox)
 
@@ -366,6 +376,33 @@ Con `docker compose start movimientos` (y esperando que quede `healthy`) repetir
 el `DELETE`: si el producto tiene movimientos responde `200` con
 `"activo": false` (baja lógica); si no, `204` (borrado físico).
 
+### Paso 11 — Probar carga, sanitización y headers (opcional)
+
+La batería de la actividad "Prueba de Carga y Blindaje de Endpoints" corre
+sola, sin Docker ni servicios levantados (ver "Tests"):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1 -Bateria
+```
+
+Esperado: pasan los tests de `productos` y `movimientos`, y cada servicio
+imprime una línea con el resultado de la prueba de carga, por ejemplo:
+
+```
+[CARGA] 20 peticiones concurrentes -> éxito: 100% (20/20) | latencia media: 120 ms | máxima: 240 ms
+```
+
+(Los milisegundos dependen de la máquina.) Con el sistema levantado, los
+headers también se ven a mano:
+
+```powershell
+curl.exe -i http://localhost:8000/health
+curl.exe -i http://localhost:8002/health
+```
+
+La respuesta incluye `x-content-type-options: nosniff`, `x-frame-options: DENY`
+y `content-security-policy: frame-ancestors 'none'`.
+
 ### Resumen de lo que se prueba
 
 | Paso | Qué se valida |
@@ -380,6 +417,7 @@ el `DELETE`: si el producto tiene movimientos responde `200` con
 | 8 | Outbox: con RabbitMQ caído el evento espera y se publica al volver |
 | 9 | Saga: movimiento pendiente si `productos` cae, recuperación por reintento y reconciliación |
 | 10 | Borrado de producto: consulta real a `movimientos`, falla cerrada si no responde |
+| 11 | Carga concurrente (20 peticiones), rechazo 400 de caracteres maliciosos y headers de seguridad |
 
 ## Concurrencia en el ajuste de stock
 
@@ -569,6 +607,48 @@ docker compose exec movimientos python -c "import sqlite3; print(sqlite3.connect
 open http://localhost:15672   # usuario/clave en .env
 ```
 
+## Seguridad de las APIs: validación de entrada y headers
+
+`productos` y `movimientos` aplican dos controles, que cubre la batería de la
+actividad "Prueba de Carga y Blindaje de Endpoints" (ver "Tests"):
+
+### Validación de entrada
+
+Vive en los schemas de Pydantic: un dato inválido se rechaza con `400` y el
+formato de error del proyecto (`{"error": true, "mensaje": ..., "detalles": [...]}`)
+antes de tocar la base de datos o llamar a otro servicio. Nunca debe terminar
+en `500`.
+
+| Servicio | Campos | Qué se rechaza |
+|---|---|---|
+| `productos` | `nombre`, `marca`, `categoria` | Los caracteres `<` `>` `;` `=` `{` `}` `\`, el acento grave y los caracteres de control (byte nulo, saltos de línea, tabulaciones). Se aceptan tildes, ñ y la puntuación habitual de un catálogo (`. , - ' & / ( ) + : % # ° ® ™ ! ?`). |
+| `movimientos` | `dni_cliente`, `dni_empleado` | Todo lo que no sea de 1 a 8 dígitos (`^[0-9]{1,8}$`), el mismo criterio que ya aplica el formulario del panel. |
+
+- El filtro de `productos` es una **lista de caracteres prohibidos**, no una
+  lista blanca: los nombres de un catálogo necesitan mucha variedad de
+  caracteres. Es una capa adicional. La defensa principal contra la inyección
+  SQL es que el acceso a datos usa SQLAlchemy con parámetros enlazados, y
+  contra XSS que el panel escapa el HTML al dibujar las tablas.
+- Se aplica solo a lo que **entra** (alta y edición), no a las respuestas: así
+  un dato guardado antes de este control no rompe un `GET` con un `500`.
+- Referencia de diseño: OWASP Top 10 (2013), A1 (Inyección) y A3 (XSS), que
+  proponen las consultas parametrizadas y el escape de salida como defensa
+  principal, y la validación de entrada como complemento.
+
+### Headers de seguridad
+
+Un middleware los agrega a **toda** respuesta de `productos` y `movimientos`,
+errores incluidos (también el `500` inesperado, ver
+[`docs/ARQUITECTURA.md`](./docs/ARQUITECTURA.md#seguridad-de-entrada-y-encabezados)).
+
+| Header | Valor | Qué evita |
+|---|---|---|
+| `X-Content-Type-Options` | `nosniff` | Sniffing: el navegador respeta el `Content-Type` declarado y no "adivina" el tipo del contenido. |
+| `X-Frame-Options` | `DENY` | Clickjacking: ningún sitio puede mostrar la respuesta dentro de un iframe. |
+| `Content-Security-Policy` | `frame-ancestors 'none'` | El mismo objetivo que `X-Frame-Options`, expresado con CSP; en los navegadores que lo soportan, lo reemplaza. |
+
+`auth` y el frontend (nginx) todavía no definen estos headers.
+
 ## Interfaz del panel (frontend)
 
 El panel (`frontend/index.html`, `app.js` y `movimientos.js`) incluye, en
@@ -677,6 +757,35 @@ Si el script falla:
   `venv` de ese servicio y volver a ejecutar.
 - Si el navegador no muestra los cambios del frontend, recargar con Ctrl+F5.
 
+### Correr los tests con el mismo script
+
+El script también prepara y corre los tests, sin Docker, Redis ni RabbitMQ y
+sin activar ningún entorno virtual a mano. Usa el Python del entorno de cada
+servicio, así que no importa si `pytest` está en el PATH ni desde qué carpeta
+o unidad se lance:
+
+| Opción | Qué hace |
+|---|---|
+| `-Tests` | Corre todos los tests (`auth`, `productos`, `movimientos` y `worker-alertas`) y muestra un resumen. No levanta el sistema. |
+| `-Bateria` | Corre solo la batería de carga, sanitización y headers (`productos` y `movimientos`). |
+| `-Todo` | Corre todos los tests y, si pasan, levanta el sistema. |
+
+Por ejemplo: `powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1 -Tests`.
+Termina con un código de salida distinto de 0 si algún test falla. La suite de
+`auth` usa el Redis en memoria (`REDIS_URL=memory://`), así que no necesita un
+Redis real. La primera vez tarda más porque crea los entornos e instala las
+dependencias de test.
+
+Si el script falla:
+
+- Ejecutarlo con **PowerShell**, no con Python (un `SyntaxError` sobre `@'`
+  indica que se corrió con `python`).
+- Si aparece `No module named pip`, `No pyvenv.cfg file` o
+  `No module named uvicorn`, el entorno virtual quedó a medias (suele pasar
+  por el antivirus o una versión de Python incompatible): borrar la carpeta
+  `venv` de ese servicio y volver a ejecutar.
+- Si el navegador no muestra los cambios del frontend, recargar con Ctrl+F5.
+
 Alternativa manual: cada servicio se puede correr con `uvicorn app.main:app
 --reload` en su propio virtualenv, ver el README de cada uno bajo
 `services/`.
@@ -700,34 +809,65 @@ También están disponibles en vivo mientras los servicios corren:
 Tests por servicio (todos corren contra una base SQLite en memoria o
 temporal, aislados entre sí, sin requerir dependencias externas):
 
-```bash
-docker compose exec productos pytest
-docker compose exec movimientos pytest
-docker compose exec worker-alertas pytest
+En Windows, lo más simple es el script, que prepara los entornos y corre todo
+(ver "Desarrollo local sin Docker"):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1 -Tests
 ```
 
-(o localmente dentro de cada carpeta, ver el README de cada servicio).
+A mano, dentro de la carpeta de cada servicio (`services/<servicio>`):
+
+```bash
+pip install -r requirements-dev.txt   # auth y productos; en movimientos y worker-alertas alcanza con requirements.txt
+python -m pytest
+```
+
+Los tests **no están incluidos en las imágenes de Docker** de `auth`,
+`productos` y `movimientos` (sus Dockerfile copian solo `app/`), por eso no se
+corren con `docker compose exec`. `worker-alertas` sí los incluye en su imagen
+(`docker compose exec worker-alertas pytest`).
 
 Cobertura actual:
 
 | Servicio | Tests | Qué cubre |
 |---|---|---|
 | `auth` | 32 | Login, roles, refresh, logout, bloqueo por intentos, consulta de revocación (modo local) |
-| `productos` | 86 | CRUD, validaciones, baja lógica, autenticación, **concurrencia** (`test_concurrencia_stock.py`), **idempotencia del ajuste** (`test_idempotencia_ajuste.py`), **integración con movimientos** (`test_integracion_movimientos.py`) |
-| `movimientos` | 62 | Delta por categoría, **saga y consistencia** (`test_saga_consistencia.py`), **outbox y relay** (`test_outbox.py`), publisher, migración de esquema, API HTTP |
+| `productos` | 101 | CRUD, validaciones, baja lógica, autenticación, **concurrencia** (`test_concurrencia_stock.py`), **idempotencia del ajuste** (`test_idempotencia_ajuste.py`), **integración con movimientos** (`test_integracion_movimientos.py`) |
+| `movimientos` | 77 | Delta por categoría, **saga y consistencia** (`test_saga_consistencia.py`), **outbox y relay** (`test_outbox.py`), publisher, migración de esquema, API HTTP |
 | `worker-alertas` | 19 | Idempotencia, regla de stock bajo (`<=`), conteo de reintentos, **healthcheck HTTP** |
 
-Los tests de `auth` necesitan un **Redis real** (usan la base 15 y la vacían
-antes de cada test), por eso no se ejecutan dentro del contenedor del compose:
-ahí `REDIS_URL` apunta a la base 0 y se borraría la blacklist de tokens. Se
-corren contra un Redis aparte (ver `services/auth/tests/conftest.py`).
+Los tests de `auth` necesitan un Redis: por defecto esperan uno **real** en
+`localhost:6379/15` (usan la base 15 y la vacían antes de cada test; nunca
+correrlos contra el Redis del compose, base 0, porque se borraría la blacklist
+de tokens). Con `REDIS_URL=memory://` usan `fakeredis` y no necesitan nada
+instalado (es lo que hace el script). Ver `services/auth/tests/conftest.py`.
 
 Además, el CI (`.github/workflows/tests.yml`) corre las cuatro suites en cada
 push, con un Redis real como servicio para `auth`.
 
 Ver el detalle de qué cubre cada archivo en el README de cada servicio. El
 frontend no tiene tests automáticos en el repositorio: se verifica
-manualmente (ver Paso 7 de "Cómo probar el sistema de punta a punta").
+manualmente (ver Pasos 7 y 11 de "Cómo probar el sistema de punta a punta").
+
+### Batería de carga y blindaje de endpoints
+
+`tests/test_bateria_minima.py`, en `productos` y en `movimientos`, documenta la
+actividad "Prueba de Carga y Blindaje de Endpoints en Vivo". Corre sin Docker
+ni servicios levantados (Redis, RabbitMQ y los otros servicios se simulan) y
+se lanza con `ejecutar_local.ps1 -Bateria`.
+
+| Prueba | `productos` | `movimientos` |
+|---|---|---|
+| **Carga concurrente**: 20 peticiones simultáneas (una barrera de hilos las libera a la vez); mide latencia media y tasa de éxito | `PATCH /ajustar-stock` sobre un producto con stock 20: las 20 salen bien y el stock termina en 0 | `POST /movimientos`: se registran 20 movimientos distintos y se piden 20 ajustes a `productos` |
+| **Sanitización**: caracteres maliciosos (XSS, SQL, plantillas, comandos, byte nulo, saltos de línea) devuelven `400`, nunca `500`, y no se guarda nada | 10 payloads sobre nombre, marca, categoría y precio, más la edición y un control con nombres reales | 9 payloads sobre los DNI, la categoría y la cantidad, más un control con datos válidos |
+| **Headers de seguridad** en respuestas 200, 201, 400, 404 y 500 | Sí | Sí |
+
+Alcance: la carga es en proceso (`TestClient` con 20 hilos) y con las
+dependencias simuladas. Mide cada servicio por separado, no la cadena
+completa ni el sistema desplegado. Con más peticiones simultáneas que
+conexiones tiene el pool de la base aparece otro límite (ver "Limitaciones
+conocidas").
 
 ## Calidad y decisiones de diseño
 
@@ -765,6 +905,17 @@ las respaldan en el README de cada servicio):
   RabbitMQ esté caído, sin coordinar dos sistemas en una sola operación.
 - **Reconciliar solo consulta, nunca reaplica**: una intención que el usuario
   abandonó no debe ejecutarse por sorpresa horas después.
+- **Validación de entrada en los schemas, solo en la entrada.** Se rechaza
+  antes de tocar la base y el formato del `400` es siempre el mismo. En
+  `productos` el filtro vive en una base de schemas de entrada
+  (`ProductoEntrada`) y no en `ProductoOut`: aplicado a la salida, un dato
+  viejo con un carácter prohibido rompería el listado con un `500`.
+- **Headers de seguridad por middleware, y explícitos en el `500`.** El
+  `500` inesperado lo arma la capa más externa de Starlette, por fuera de los
+  middlewares; por eso su handler recibe los headers de forma explícita (lo
+  verifica un test).
+- **El DNI se valida igual en el backend que en el panel**: solo dígitos,
+  hasta 8. Antes el backend aceptaba cualquier texto de hasta 20 caracteres.
 - **Regla de stock bajo `stock_actual <= stock_minimo`** en el frontend y en el
   worker: el mínimo es el punto de reposición, así que estar *en* el mínimo ya
   es "hay que reponer". Con mínimo 0, además, alerta cuando el producto se agota.
@@ -815,4 +966,17 @@ para el detalle de cada una. Las más relevantes:
   perderse. Es lo deseado, pero la tabla `outbox_eventos` crece mientras tanto.
 - **Modo local sin Docker:** sin RabbitMQ ni worker (los eventos quedan en el
   outbox), y la revocación de tokens suma una llamada HTTP a `auth` por request.
+- Los headers de seguridad y el filtro de caracteres existen en `productos`
+  y `movimientos`; `auth` y el frontend (nginx) todavía no los tienen.
+- El filtro de caracteres de `productos` es una lista de caracteres
+  prohibidos, no una lista blanca: es una capa adicional (ver "Seguridad de
+  las APIs").
+- Con la configuración por defecto de SQLAlchemy (pool de 5 conexiones más 10
+  de desborde), `productos` puede quedarse sin conexiones libres bajo muchas
+  ventas exitosas simultáneas: en una prueba local con 150 ventas simultáneas
+  y stock suficiente, la mayoría de las peticiones no obtuvo respuesta
+  (`QueuePool limit of size 5 overflow 10 reached`), mientras que con
+  `pool_size=20` y `max_overflow=60` en `create_engine` se resolvieron todas.
+  Ese ajuste todavía no está aplicado, y la prueba de 20 peticiones de la
+  batería no llega a exponerlo.
 - El frontend no tiene tests automáticos.

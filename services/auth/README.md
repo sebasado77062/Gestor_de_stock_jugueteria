@@ -169,10 +169,13 @@ Los tests cubren:
 - **Consulta de revocación** (`test_consulta_revocacion.py`): deshabilitado por
   defecto, y tras un logout el `jti` figura como revocado.
 
-Los tests corren contra una base SQLite en memoria y un **Redis real** (base 15,
-que se vacía antes de cada test; ver `tests/conftest.py`), aislados entre sí. En
-CI se levanta como servicio. No correrlos contra el Redis de `docker compose`
-(base 0), porque se borraría la blacklist de tokens.
+Los tests corren contra una base SQLite en memoria, aislados entre sí. Para
+Redis, por defecto esperan uno **real** en `localhost:6379/15` (como el CI, donde
+se levanta como servicio); la base 15 se vacía antes de cada test (ver
+`tests/conftest.py`). Con `REDIS_URL=memory://` usan `fakeredis` y no necesitan
+nada instalado (es lo que hace `.\ejecutar_local.ps1 -Tests`). No correrlos
+contra el Redis de `docker compose` (base 0), porque se borraría la blacklist de
+tokens.
 
 ## Contrato de la API
 
