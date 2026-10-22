@@ -1,128 +1,153 @@
 """
-Fixtures compartidas para los tests HTTP del servicio movimientos
-(las usa tests/test_bateria_minima.py).
+Fixtures compartidas de los tests de Movimientos.
 
-Qué reemplaza cada fixture, para que los tests no necesiten Docker, Redis,
-RabbitMQ ni el servicio de Productos corriendo:
-
-    - Base de datos  -> SQLite en un archivo temporal, nueva en cada test.
-                        (Es archivo y no ":memory:" porque el test de carga
-                        usa varios hilos a la vez y cada uno necesita su
-                        propia sesión sobre la misma base.)
-    - Autenticación  -> se simula un usuario autenticado con dependency_overrides
-                        (no se generan JWT reales ni se consulta Redis).
-    - Productos      -> se mockea productos_client.ajustar_stock.
-    - RabbitMQ       -> se mockea publisher.publicar_movimiento_registrado.
-
-Los tests que ya existían (test_movimientos.py, test_idempotencia.py) no
-usan este archivo: arman sus propias fixtures.
+Ninguno necesita Productos, Redis ni RabbitMQ corriendo: Productos se simula
+con `ProductosFalso`, que reproduce lo que importa de su comportamiento real
+(el ajuste de stock es idempotente por clave), y RabbitMQ con un publicador
+falso que registra lo que se le pide publicar.
 """
 import os
-
-# Estas variables se leen al IMPORTAR app.main, así que van antes del import.
-os.environ.setdefault("AUTH_SECRET_KEY", "clave-de-test-no-usar-en-produccion")
-# app.main crea las tablas al importarse: se apunta a una base en memoria para
-# que importar la app en los tests nunca toque (ni exija) el archivo real
-# data/movimientos.db.
-os.environ["DATABASE_URL"] = "sqlite:///:memory:"
-
 import tempfile
-from unittest.mock import patch
+import threading
+from contextlib import contextmanager
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.jwt_auth import obtener_token_y_payload
-from app.database.db import Base, get_db
-from app.main import app
+# app.core.jwt_auth exige AUTH_SECRET_KEY al importarse. Valor de prueba (no es
+# un secreto real); si el entorno ya la define (CI), se respeta.
+os.environ.setdefault("AUTH_SECRET_KEY", "clave-de-test-no-usar-en-produccion")
+# Los tests no arrancan el hilo que publica en RabbitMQ.
+os.environ["OUTBOX_RELAY_HABILITADO"] = "false"
+
+from app.clients.productos_client import ProductosClientError  # noqa: E402
+from app.database.db import Base  # noqa: E402
+from app.models import movimiento as _m, outbox as _o  # noqa: E402,F401  (registran las tablas en Base)
 
 TOKEN_FALSO = "token-de-prueba-no-valido"
-PAYLOAD_ADMIN_FALSO = {
-    "sub": "1",
-    "email": "admin@test.com",
-    "rol": "admin",
-    "tipo": "access",
-    "jti": "jti-fake-admin",
-}
-
-# Lo que devolvería Productos al aceptar un ajuste de stock.
-PRODUCTO_AJUSTADO_FALSO = {
-    "id_producto": 1,
-    "nombre": "Muñeca Bebota",
-    "stock_actual": 9,
-    "stock_minimo": 5,
-}
 
 
 @pytest.fixture()
-def session_factory():
-    """Fábrica de sesiones sobre una base SQLite temporal, vacía en cada test."""
+def SessionLocal():
+    """Sesiones sobre un archivo SQLite temporal (cada sesión abre su propia conexión)."""
     archivo = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     archivo.close()
-
     engine = create_engine(
-        f"sqlite:///{archivo.name}", connect_args={"check_same_thread": False}
+        f"sqlite:///{archivo.name}",
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
     Base.metadata.create_all(bind=engine)
-
     yield sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
     engine.dispose()
     os.remove(archivo.name)
 
 
-@pytest.fixture()
-def productos_mock():
-    """Productos acepta siempre el ajuste de stock. Devuelve el mock para inspeccionarlo."""
-    with patch(
-        "app.services.movimiento_service.productos_client.ajustar_stock",
-        return_value=PRODUCTO_AJUSTADO_FALSO,
-    ) as mock:
-        yield mock
-
-
-@pytest.fixture()
-def publisher_mock():
-    """RabbitMQ reemplazado por un mock: no se publica nada de verdad."""
-    with patch("app.messaging.publisher.publicar_movimiento_registrado") as mock:
-        yield mock
-
-
-@pytest.fixture()
-def client(session_factory, productos_mock, publisher_mock):
+class ProductosFalso:
     """
-    TestClient de la app real, con una sesión de base NUEVA por request (como
-    en producción) y la autenticación simulada como admin.
+    Doble de prueba del servicio de Productos, con su semántica real:
+
+    - ajustar_stock aplica el cambio UNA vez por `clave` (reintentos con la
+      misma clave no vuelven a modificar el stock);
+    - 404 si el producto no existe, 409 si no alcanza el stock;
+    - se puede "romper" (`caido`) para simular timeouts, o hacer que el ajuste
+      se APLIQUE pero la respuesta se pierda (`perder_respuesta`), que es el
+      caso incierto más difícil.
+
+    Cada método es seguro para usar desde varios hilos.
     """
 
-    def override_get_db():
-        db = session_factory()
-        try:
-            yield db
-        finally:
-            db.close()
+    def __init__(self, stock_inicial=None):
+        self.stock = dict(stock_inicial or {1: 10})
+        self.claves_aplicadas = {}  # clave -> (id_producto, delta)
+        self.llamadas_ajustar = []  # (id_producto, delta, clave)
+        self.caido = False
+        self.perder_respuesta = False
+        self.error_http = None  # p. ej. ProductosClientError(401, ...)
+        self._lock = threading.Lock()
 
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[obtener_token_y_payload] = lambda: (
-        TOKEN_FALSO,
-        PAYLOAD_ADMIN_FALSO,
-    )
+    def _snapshot(self, id_producto):
+        return {
+            "id_producto": id_producto,
+            "nombre": f"Producto {id_producto}",
+            "stock_actual": self.stock[id_producto],
+            "stock_minimo": 3,
+        }
 
-    with TestClient(app) as test_client:
-        yield test_client
+    def ajustar_stock(self, id_producto, delta, token, clave=None):
+        with self._lock:
+            self.llamadas_ajustar.append((id_producto, delta, clave))
+            if self.caido:
+                raise ProductosClientError(503, "No se pudo conectar con el servicio de Productos para ajustar el stock.")
+            if self.error_http is not None:
+                raise self.error_http
+            if clave in self.claves_aplicadas:  # reintento: no se vuelve a aplicar
+                return self._snapshot(id_producto)
+            if id_producto not in self.stock:
+                raise ProductosClientError(404, f"No existe el producto con id_producto={id_producto}.")
+            if delta < 0 and self.stock[id_producto] < -delta:
+                raise ProductosClientError(409, "Stock insuficiente para registrar este movimiento.")
+            self.stock[id_producto] += delta
+            if clave:
+                self.claves_aplicadas[clave] = (id_producto, delta)
+            if self.perder_respuesta:
+                raise ProductosClientError(503, "El servicio de Productos no respondió a tiempo al ajustar el stock.")
+            return self._snapshot(id_producto)
 
-    app.dependency_overrides.clear()
+    def consultar_ajuste(self, clave, token):
+        with self._lock:
+            if self.caido:
+                raise ProductosClientError(503, "No se pudo conectar con el servicio de Productos.")
+            if clave in self.claves_aplicadas:
+                id_producto, delta = self.claves_aplicadas[clave]
+                return {"clave": clave, "id_producto": id_producto, "delta": delta}
+            return None
+
+    def obtener_producto(self, id_producto, token):
+        with self._lock:
+            if self.caido:
+                raise ProductosClientError(503, "No se pudo conectar con el servicio de Productos.")
+            return self._snapshot(id_producto)
 
 
 @pytest.fixture()
-def movimiento_payload():
-    """Payload válido mínimo para registrar un movimiento."""
-    return {
-        "categoria_movimiento": "venta",
-        "cantidad_movida": 2,
-        "id_producto": 1,
-        "dni_cliente": "30123456",
-        "dni_empleado": "20111222",
-    }
+def productos(monkeypatch):
+    """Reemplaza el cliente HTTP de Productos por el doble de prueba."""
+    from app.clients import productos_client
+
+    falso = ProductosFalso()
+    monkeypatch.setattr(productos_client, "ajustar_stock", falso.ajustar_stock)
+    monkeypatch.setattr(productos_client, "consultar_ajuste", falso.consultar_ajuste)
+    monkeypatch.setattr(productos_client, "obtener_producto", falso.obtener_producto)
+    return falso
+
+
+class PublicadorFalso:
+    """Doble de prueba de RabbitMQ para el relay/outbox."""
+
+    def __init__(self):
+        self.publicados = []  # (routing_key, payload)
+        self.fallar_siempre = False
+        self.fallar_en = set()  # índices (0-based) de la secuencia de publicaciones que fallan
+        self.aperturas = 0
+        self._intentos = 0
+
+    @contextmanager
+    def abrir(self):
+        self.aperturas += 1
+        if self.fallar_siempre:
+            raise ConnectionError("RabbitMQ caído")
+
+        def publicar(routing_key, payload):
+            indice = self._intentos
+            self._intentos += 1
+            if indice in self.fallar_en:
+                raise ConnectionError("el broker no confirmó el mensaje")
+            self.publicados.append((routing_key, payload))
+
+        yield publicar
+
+
+@pytest.fixture()
+def rabbit():
+    return PublicadorFalso()

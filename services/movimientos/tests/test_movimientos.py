@@ -2,40 +2,20 @@
 Tests del servicio de Movimientos: registro básico, cálculo de delta por
 categoría, y propagación de errores del servicio de Productos.
 
-No requieren Productos, Redis ni RabbitMQ corriendo: se mockean el cliente
-HTTP y el publicador de eventos. El token de prueba es ficticio (el service
+No requieren Productos, Redis ni RabbitMQ corriendo: se mockea el cliente
+HTTP de Productos (la saga completa, con fallos y reintentos, se prueba en
+test_saga_consistencia.py). El token de prueba es ficticio (el service
 no lo valida, solo lo propaga).
 """
-import os
-import tempfile
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.clients.productos_client import ProductosClientError
-from app.database.db import Base
 from app.schemas.movimiento import MovimientoCreate
 from app.services import movimiento_service
 
 TOKEN_FALSO = "token-de-prueba-no-valido"
-
-
-@pytest.fixture()
-def SessionLocal():
-    archivo_temporal = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    archivo_temporal.close()
-    url = f"sqlite:///{archivo_temporal.name}"
-
-    engine = create_engine(url, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(bind=engine)
-    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-    yield Session
-
-    engine.dispose()
-    os.remove(archivo_temporal.name)
 
 
 @pytest.mark.parametrize(
@@ -56,7 +36,7 @@ def test_calcula_el_delta_segun_la_categoria(SessionLocal, categoria, cantidad, 
         mock_ajustar.return_value = {"id_producto": 1, "stock_actual": 10}
         movimiento_service.registrar_movimiento(db, datos, TOKEN_FALSO)
 
-    mock_ajustar.assert_called_once_with(1, delta_esperado, TOKEN_FALSO)
+    mock_ajustar.assert_called_once_with(1, delta_esperado, TOKEN_FALSO, clave=ANY)
     db.close()
 
 

@@ -18,6 +18,7 @@ al nombre del servicio ("http://productos:8000"); en desarrollo local sin
 Docker, por defecto usa "http://localhost:8000".
 """
 import os
+from typing import Optional
 
 import httpx
 
@@ -85,20 +86,28 @@ def obtener_producto(id_producto: int, token: str) -> dict:
     return respuesta.json()
 
 
-def ajustar_stock(id_producto: int, delta: int, token: str) -> dict:
+def ajustar_stock(id_producto: int, delta: int, token: str, clave: Optional[str] = None) -> dict:
     """
     PATCH /api/v1/productos/{id}/ajustar-stock en el servicio de Productos.
 
     delta > 0 incrementa el stock (ingreso, devolución).
     delta < 0 intenta decrementarlo (venta, estropeo); si Productos responde
     409 (ajuste atómico rechazado por falta de stock) se propaga tal cual.
+
+    `clave` se envía como header Idempotency-Key: Productos aplica el ajuste
+    UNA sola vez por clave, así que este método se puede repetir sin riesgo
+    de descontar dos veces (es lo que permite reintentar y recuperar
+    movimientos pendientes, ver services/movimiento_service.py).
     """
     url = f"{PRODUCTOS_SERVICE_URL}/api/v1/productos/{id_producto}/ajustar-stock"
+    headers = _headers_con_token(token)
+    if clave:
+        headers["Idempotency-Key"] = clave
     try:
         respuesta = httpx.patch(
             url,
             json={"delta": delta},
-            headers=_headers_con_token(token),
+            headers=headers,
             timeout=TIMEOUT_SEGUNDOS,
         )
     except httpx.TimeoutException as error:
@@ -112,4 +121,30 @@ def ajustar_stock(id_producto: int, delta: int, token: str) -> dict:
 
     if respuesta.status_code >= 400:
         raise _traducir_error(respuesta, id_producto, "ajustar el stock")
+    return respuesta.json()
+
+def consultar_ajuste(clave: str, token: str) -> Optional[dict]:
+    """
+    GET /api/v1/productos/ajustes/{clave} en el servicio de Productos.
+
+    Devuelve el registro del ajuste si esa operación llegó a aplicarse, o None
+    si nunca se aplicó (404). Se usa para reconciliar movimientos pendientes:
+    confirma la verdad sobre el stock sin volver a modificarlo.
+    """
+    url = f"{PRODUCTOS_SERVICE_URL}/api/v1/productos/ajustes/{clave}"
+    try:
+        respuesta = httpx.get(url, headers=_headers_con_token(token), timeout=TIMEOUT_SEGUNDOS)
+    except httpx.TimeoutException as error:
+        raise ProductosClientError(503, "El servicio de Productos no respondió a tiempo.") from error
+    except httpx.RequestError as error:
+        raise ProductosClientError(503, "No se pudo conectar con el servicio de Productos.") from error
+
+    if respuesta.status_code == 404:
+        return None
+    if respuesta.status_code == 401:
+        raise ProductosClientError(401, "Tu sesión venció o el token es inválido. Iniciá sesión de nuevo.")
+    if respuesta.status_code == 403:
+        raise ProductosClientError(403, "No tenés permisos para esta operación sobre el stock.")
+    if respuesta.status_code >= 400:
+        raise ProductosClientError(502, "El servicio de Productos devolvió un error inesperado al consultar el ajuste.")
     return respuesta.json()

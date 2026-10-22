@@ -12,7 +12,7 @@
           "Movimientos"
         ],
         "summary": "Crear Movimiento",
-        "description": "POST /api/v1/movimientos -> 201 Created.\n\nRequiere usuario autenticado (cualquier rol). El token se reenvía a\nProductos para que aplique sus reglas de rol (admin o empleado).\n\nSi se envía el header Idempotency-Key y ya existe un movimiento\nregistrado con esa misma clave, se devuelve ese movimiento sin volver a\najustar el stock ni crear un registro duplicado.",
+        "description": "POST /api/v1/movimientos -> 201 Created.\n\nRequiere usuario autenticado (cualquier rol). El token se reenvía a\nProductos para que aplique sus reglas de rol (admin o empleado).\n\nSi se envía el header Idempotency-Key y ya existe un movimiento con esa\nclave, se devuelve ese movimiento sin volver a ajustar el stock (si estaba\npendiente, se completa ahora). Reutilizar la clave con un contenido\ndistinto devuelve 422.\n\nErrores: 404 (producto inexistente) y 409 (stock insuficiente) son\ndefinitivos y no dejan nada registrado. 401/403/502/503 dejan el movimiento\n`pendiente`: el mensaje lo aclara y reintentar con la misma clave lo completa.",
         "operationId": "crear_movimiento_api_v1_movimientos_post",
         "security": [
           {
@@ -27,7 +27,8 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "string",
+                  "maxLength": 100
                 },
                 {
                   "type": "null"
@@ -100,6 +101,58 @@
         }
       }
     },
+    "/api/v1/movimientos/reconciliar": {
+      "post": {
+        "tags": [
+          "Movimientos"
+        ],
+        "summary": "Reconciliar Movimientos Pendientes",
+        "description": "POST /api/v1/movimientos/reconciliar -> 200 OK. Solo admin.\n\nResuelve los movimientos que quedaron `pendiente` (porque Productos no\nrespondió, o falló el guardado final) consultando a Productos si el ajuste\nde stock llegó a aplicarse: si se aplicó, el movimiento se confirma; si no,\nse descarta. NUNCA vuelve a modificar el stock. Los que no se pueden\nconsultar quedan pendientes para otra pasada.",
+        "operationId": "reconciliar_movimientos_pendientes_api_v1_movimientos_reconciliar_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "antiguedad_minima_segundos",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Solo se revisan los pendientes con al menos esta antigüedad (evita pisar un reintento en curso).",
+              "default": 300,
+              "title": "Antiguedad Minima Segundos"
+            },
+            "description": "Solo se revisan los pendientes con al menos esta antigüedad (evita pisar un reintento en curso)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliacionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/productos/{id_producto}/movimientos": {
       "get": {
         "tags": [
@@ -135,6 +188,54 @@
                     "$ref": "#/components/schemas/MovimientoOut"
                   },
                   "title": "Response Listar Movimientos De Producto Api V1 Productos  Id Producto  Movimientos Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/productos/{id_producto}/movimientos/cantidad": {
+      "get": {
+        "tags": [
+          "Movimientos"
+        ],
+        "summary": "Contar Movimientos De Producto",
+        "description": "GET /api/v1/productos/{id}/movimientos/cantidad -> 200 OK.\n\nCantidad de movimientos (confirmados o pendientes) de un producto. Lo\nconsulta el servicio de Productos antes de eliminar un producto, para\ndecidir entre borrado físico y baja lógica sin descargar todo el historial.",
+        "operationId": "contar_movimientos_de_producto_api_v1_productos__id_producto__movimientos_cantidad_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id_producto",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Producto"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CantidadMovimientosOut"
                 }
               }
             }
@@ -195,6 +296,25 @@
   },
   "components": {
     "schemas": {
+      "CantidadMovimientosOut": {
+        "properties": {
+          "id_producto": {
+            "type": "integer",
+            "title": "Id Producto"
+          },
+          "cantidad": {
+            "type": "integer",
+            "title": "Cantidad"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id_producto",
+          "cantidad"
+        ],
+        "title": "CantidadMovimientosOut",
+        "description": "Cantidad de movimientos de un producto (la usa Productos antes de dar de baja)."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -236,27 +356,25 @@
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[0-9]{1,8}$"
+                "maxLength": 20
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Dni Cliente",
-            "description": "DNI: solo dígitos, hasta 8"
+            "title": "Dni Cliente"
           },
           "dni_empleado": {
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[0-9]{1,8}$"
+                "maxLength": 20
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Dni Empleado",
-            "description": "DNI: solo dígitos, hasta 8"
+            "title": "Dni Empleado"
           }
         },
         "type": "object",
@@ -312,6 +430,16 @@
               }
             ],
             "title": "Dni Empleado"
+          },
+          "estado": {
+            "type": "string",
+            "enum": [
+              "pendiente",
+              "confirmado"
+            ],
+            "title": "Estado",
+            "description": "confirmado: el stock ya fue ajustado. pendiente: se guardó la solicitud pero todavía no se confirmó el ajuste de stock (reintentar con la misma Idempotency-Key).",
+            "default": "confirmado"
           }
         },
         "type": "object",
@@ -324,6 +452,35 @@
         ],
         "title": "MovimientoOut",
         "description": "Schema de salida: lo que la API devuelve al cliente."
+      },
+      "ReconciliacionOut": {
+        "properties": {
+          "revisados": {
+            "type": "integer",
+            "title": "Revisados"
+          },
+          "confirmados": {
+            "type": "integer",
+            "title": "Confirmados"
+          },
+          "descartados": {
+            "type": "integer",
+            "title": "Descartados"
+          },
+          "sin_resolver": {
+            "type": "integer",
+            "title": "Sin Resolver"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revisados",
+          "confirmados",
+          "descartados",
+          "sin_resolver"
+        ],
+        "title": "ReconciliacionOut",
+        "description": "Resultado de POST /api/v1/movimientos/reconciliar."
       },
       "ValidationError": {
         "properties": {
