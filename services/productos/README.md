@@ -58,6 +58,7 @@ Ver `app/core/jwt_auth.py` para el mecanismo de validación.
 | PUT | `/api/v1/productos/{id}` | Actualiza datos descriptivos. **No acepta `stock_actual`** (ver más abajo). | `empleado` |
 | DELETE | `/api/v1/productos/{id}` | Elimina o da de baja según tenga movimientos asociados (ver más abajo). | `admin` |
 | PATCH | `/api/v1/productos/{id}/ajustar-stock` | Ajusta el stock atómicamente. **Endpoint interno**, consumido por `services/movimientos`. | `empleado` |
+| GET | `/api/v1/productos/ajustes/{clave}` | ¿Se aplicó un ajuste con esa `Idempotency-Key`? 200 o 404. Lo usa `movimientos` para reconciliar. | `empleado` |
 | GET | `/health` | Healthcheck (sin auth). | — |
 | POST | `/api/v1/dev/seed-productos?cantidad=N` | Genera N productos de prueba. Solo desarrollo. | `empleado` |
 
@@ -79,6 +80,18 @@ ingresos, estropeos y devoluciones sobre el stock. El body es:
 decrementarlo (venta, estropeo). El ajuste se aplica de forma **atómica**
 (ver sección Concurrencia más abajo), así que es seguro ante llamadas
 concurrentes: nunca deja `stock_actual` negativo.
+
+**Idempotente (opcional):** si se envía el header `Idempotency-Key`, el ajuste se
+aplica **una sola vez por clave**. La clave se guarda en la tabla
+`ajustes_stock` **en la misma transacción** que el cambio de stock, así que no
+puede quedar un ajuste aplicado sin su clave ni al revés. Repetir el pedido
+(mismo producto y misma cantidad) devuelve `200` con el producto actual y no
+vuelve a modificar el stock; con dos pedidos simultáneos con la misma clave, la
+clave primaria deja pasar a uno solo y el otro revierte su cambio. Reutilizar la
+clave para un ajuste distinto devuelve `422`. Un ajuste rechazado por falta de
+stock (409) **no** consume la clave. Es lo que permite a `movimientos`
+reintentar o recuperar un movimiento pendiente sin descontar dos veces. Sin
+header, el comportamiento es el de siempre.
 
 El token del usuario que originó el movimiento se propaga desde
 `movimientos` hacia acá — no se usan credenciales de servicio. Así, las
@@ -132,14 +145,23 @@ Un producto dado de baja:
 - **No** aparece en `GET /api/v1/productos` por defecto.
 - Sí aparece con `GET /api/v1/productos?incluir_inactivos=true`.
 
-**Limitación actual:** la función
-`producto_service.tiene_movimientos_asociados` sigue siendo un *stub* que
-siempre devuelve `False` — aunque `services/movimientos` ya existe, la
-consulta real a su API todavía no está implementada. Hoy, en la práctica,
-todo `DELETE` resulta en borrado físico. El punto de integración está
-aislado en esa única función: cuando se agregue la consulta real (vía la
-API REST de `movimientos`), no hará falta tocar el router ni el resto del
-servicio.
+**Cómo se decide "tiene movimientos":** `producto_service.tiene_movimientos_asociados`
+consulta de verdad al servicio `movimientos`
+(`GET /api/v1/productos/{id}/movimientos/cantidad`, vía
+`app/clients/movimientos_client.py`), reenviando el token del admin que hace la
+baja. Cuenta los movimientos confirmados y también los pendientes de
+confirmación (el stock pudo haberse ajustado ya).
+
+Si `movimientos` no responde, el `DELETE` **falla cerrado**: devuelve `503` y no
+borra ni da de baja nada. Suponer "sin movimientos" ante la duda llevaría a
+borrar físicamente un producto con historial, que es justo lo que esta
+decisión evita. La consulta y el borrado no forman una transacción (son
+servicios distintos), así que un movimiento registrado en los milisegundos
+entre ambos pasos no se vería.
+
+`productos` solo llama a `movimientos` en tiempo de ejecución; en
+`docker-compose.yml` no hay `depends_on` en esa dirección (movimientos ya
+depende de productos y sería un ciclo).
 
 ## Concurrencia en el ajuste de stock
 
@@ -237,15 +259,17 @@ lógica de negocio.
 | `DATABASE_URL` | `sqlite:///./data/jugueteria.db` | URL de la base propia |
 | `AUTH_SECRET_KEY` | — (obligatoria) | Mismo secreto que `auth`, para validar JWT localmente |
 | `REDIS_URL` | `redis://localhost:6379/0` | Para consultar la blacklist de tokens revocados. Se puede usar `memory://` en desarrollo (usa `fakeredis`) |
+| `AUTH_SERVICE_URL` | — | **Solo modo local** (`REDIS_URL=memory://`): URL de `auth`. Como cada servicio tiene su propio Redis en memoria, acá se le pregunta a `auth` si un token fue revocado para que el logout sea efectivo |
+| `MOVIMIENTOS_SERVICE_URL` | `http://localhost:8002` | URL interna del servicio Movimientos (para saber si un producto tiene historial). En Docker Compose: `http://movimientos:8000` |
+| `MOVIMIENTOS_SERVICE_TIMEOUT` | `5` (segundos) | Timeout de esa consulta |
 | `HABILITAR_SEED_ENDPOINT` | `true` | Habilita/deshabilita el router de seed |
 
 ## Limitaciones conocidas
 
-- **`tiene_movimientos_asociados` es un stub** (ver arriba): aunque
-  `services/movimientos` ya existe, la consulta real todavía no está
-  implementada, así que la baja lógica no se activa en la práctica. El
-  mecanismo sí está probado (ver `tests/test_baja_logica_productos.py`,
-  que lo ejercita simulando la respuesta con `monkeypatch`).
+- **La baja de un producto depende de que `movimientos` responda**: si está
+  caído, `DELETE` devuelve 503 (ver "Baja lógica"). Es deliberado (falla
+  cerrado), pero significa que no se puede borrar mientras `movimientos` no esté
+  disponible.
 - **Sin paginación** en `GET /api/v1/productos`: devuelve el listado
   completo. Con el volumen de datos esperado para una juguetería (decenas
   o cientos de productos) no es un problema práctico, pero no escalaría
@@ -262,7 +286,9 @@ lógica de negocio.
   de la blacklist de tokens falla hacia "no revocado" (se sigue validando
   firma y expiración). Es una decisión para no bloquear todo el servicio
   por una dependencia secundaria; la contrapartida es que un logout no
-  invalida el token hasta que expire solo.
+  invalida el token hasta que expire solo. En el modo local sin Docker, con
+  `AUTH_SERVICE_URL` definida, la revocación se consulta a `auth` (una llamada
+  HTTP por request) y, si `auth` no responde, se aplica el mismo criterio.
 
 ## Tests
 
@@ -279,7 +305,16 @@ La suite cubre:
   particular que el PUT nunca modifique `stock_actual` aunque el cliente
   intente enviarlo.
 - **Baja lógica** (`tests/test_baja_logica_productos.py`): comportamiento
-  de `DELETE` con y sin movimientos simulados, filtro `incluir_inactivos`.
+  de `DELETE` con y sin movimientos (simulados con el stub `movimientos_stub`
+  de `conftest.py`), filtro `incluir_inactivos`.
+- **Idempotencia del ajuste** (`tests/test_idempotencia_ajuste.py`): misma
+  clave no descuenta dos veces, clave reutilizada → 422, un 409 no consume la
+  clave, consulta `GET /ajustes/{clave}`, y dos pedidos simultáneos con la misma
+  clave con hilos reales (se descuenta una sola vez).
+- **Integración con movimientos** (`tests/test_integracion_movimientos.py`):
+  `DELETE` consulta de verdad a Movimientos (baja lógica / borrado físico), falla
+  cerrada con 503 si no responde, reenvía el token, traducción de errores del
+  cliente HTTP, y la revocación de tokens consultada a `auth` en modo local.
 - **Concurrencia** (`tests/test_concurrencia_stock.py`): reproduce la
   sobreventa con un ajuste no atómico y verifica que el ajuste atómico la
   previene.

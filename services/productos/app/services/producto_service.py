@@ -6,10 +6,21 @@ modelo, y las reglas propias del dominio (por ejemplo, verificar que el
 producto exista antes de actualizarlo o eliminarlo). Las rutas (routers)
 no acceden directamente a la base de datos: siempre pasan por aquí.
 """
+from typing import Optional
+
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from app.clients import movimientos_client
+from app.models.ajuste_stock import AjusteStock
 from app.models.producto import Producto
 from app.schemas.producto import ProductoCreate, ProductoUpdate
+
+# Resultado de ajustar_stock_atomico cuando una Idempotency-Key ya fue usada
+# para un ajuste DISTINTO (otro producto u otra cantidad): es un uso incorrecto
+# de la clave, no un reintento.
+CLAVE_REUTILIZADA = "clave_reutilizada"
 
 
 def obtener_productos(db: Session, incluir_inactivos: bool = False):
@@ -87,21 +98,26 @@ def actualizar_producto(db: Session, id_producto: int, datos: ProductoUpdate):
     return producto_db
 
 
-def tiene_movimientos_asociados(db: Session, id_producto: int) -> bool:
+def tiene_movimientos_asociados(db: Session, id_producto: int, token: Optional[str] = None) -> bool:
     """
-    Indica si el producto tiene movimientos de stock registrados.
+    Indica si el producto tiene movimientos de stock registrados, consultando
+    al servicio de Movimientos por su API REST (ver
+    app/clients/movimientos_client.py). Productos no accede a la base de
+    Movimientos: cada servicio es dueño de sus datos.
 
-    Placeholder hasta que exista services/movimientos: hoy siempre devuelve
-    False porque no hay ninguna tabla ni servicio de movimientos con quién
-    consultar. Se deja esta función como el único punto de integración a
-    modificar cuando movimientos exista (ya sea consultando su API REST, o
-    una tabla compartida), para no tener que tocar eliminar_producto de
-    nuevo en ese momento.
+    `token` es el JWT del usuario que pidió la operación, reenviado a
+    Movimientos (no se usan credenciales de servicio).
+
+    Cuenta los movimientos confirmados y también los pendientes de
+    confirmación (el stock pudo haberse ajustado ya). Si Movimientos no
+    responde se levanta MovimientosClientError: la consulta FALLA CERRADA, es
+    decir, no se supone "no tiene movimientos" (eso llevaría a borrar
+    físicamente un producto con historial).
     """
-    return False
+    return movimientos_client.contar_movimientos(id_producto, token) > 0
 
 
-def eliminar_producto(db: Session, id_producto: int):
+def eliminar_producto(db: Session, id_producto: int, token: Optional[str] = None):
     """
     RF05: Eliminar (dar de baja) un producto del inventario.
 
@@ -117,12 +133,19 @@ def eliminar_producto(db: Session, id_producto: int):
     Devuelve el objeto Producto afectado (borrado o dado de baja), o None
     si no existía. El llamador puede inspeccionar producto.activo para
     saber cuál de los dos casos ocurrió.
+
+    Si no se puede consultar a Movimientos se levanta MovimientosClientError
+    y NO se borra ni se da de baja nada (ver tiene_movimientos_asociados).
+
+    Límite conocido: la consulta a Movimientos y el borrado no forman una
+    única transacción (son servicios distintos). Un movimiento registrado
+    justo entre ambos pasos no se vería; la ventana es de milisegundos.
     """
     producto_db = obtener_producto_por_id(db, id_producto)
     if not producto_db:
         return None
 
-    if tiene_movimientos_asociados(db, id_producto):
+    if tiene_movimientos_asociados(db, id_producto, token):
         producto_db.activo = False
         db.commit()
         db.refresh(producto_db)
@@ -133,7 +156,19 @@ def eliminar_producto(db: Session, id_producto: int):
     return producto_db
 
 
-def ajustar_stock_atomico(db: Session, id_producto: int, delta: int):
+def obtener_ajuste_por_clave(db: Session, clave: str) -> Optional[AjusteStock]:
+    """Devuelve el ajuste aplicado con esa Idempotency-Key, o None si nunca se aplicó."""
+    return db.get(AjusteStock, clave)
+
+
+def _resultado_de_clave_ya_usada(previo: AjusteStock, id_producto: int, delta: int) -> str:
+    """Una clave ya registrada: es un reintento legítimo solo si el ajuste es el mismo."""
+    if previo.id_producto != id_producto or previo.delta != delta:
+        return CLAVE_REUTILIZADA
+    return "ok"
+
+
+def ajustar_stock_atomico(db: Session, id_producto: int, delta: int, clave: Optional[str] = None):
     """
     Ajusta el stock de un producto de forma ATÓMICA a nivel de base de datos,
     evitando la condición de carrera clásica de "leer -> validar en Python ->
@@ -143,11 +178,25 @@ def ajustar_stock_atomico(db: Session, id_producto: int, delta: int):
     delta < 0 -> intenta decrementar |delta| unidades (venta, estropeo). Solo
                  se aplica si stock_actual >= |delta|.
 
+    Idempotencia (opcional): si se pasa `clave`, el cambio de stock y el
+    registro de la clave (tabla ajustes_stock) se confirman en la MISMA
+    transacción. Si la clave ya había sido aplicada, el ajuste NO se repite y
+    se devuelve "ok" (reintento). Si dos pedidos con la misma clave llegan a
+    la vez, la clave primaria deja pasar a uno solo: el otro revierte su
+    cambio y también recibe "ok". Un ajuste rechazado por falta de stock no
+    registra la clave, así que se puede volver a intentar más tarde.
+
     Devuelve:
-        "ok"        si el ajuste se aplicó.
-        "sin_stock" si no había stock suficiente (solo puede pasar con delta < 0).
-        None        si el producto no existe.
+        "ok"                si el ajuste se aplicó (o ya se había aplicado con esa clave).
+        "sin_stock"         si no había stock suficiente (solo puede pasar con delta < 0).
+        CLAVE_REUTILIZADA   si la clave ya se usó para un ajuste distinto.
+        None                si el producto no existe.
     """
+    if clave:
+        previo = db.get(AjusteStock, clave)
+        if previo is not None:
+            return _resultado_de_clave_ya_usada(previo, id_producto, delta)
+
     producto = obtener_producto_por_id(db, id_producto)
     if not producto:
         return None
@@ -167,8 +216,23 @@ def ajustar_stock_atomico(db: Session, id_producto: int, delta: int):
         )
 
     resultado = db.execute(sentencia)
-    db.commit()
 
     if resultado.rowcount == 0:
+        db.rollback()
         return "sin_stock"
+
+    if clave:
+        db.add(AjusteStock(clave=clave, id_producto=id_producto, delta=delta))
+
+    try:
+        db.commit()
+    except IntegrityError:
+        # Otro pedido con la misma clave se confirmó primero: este cambio se
+        # revierte completo (stock incluido) y se trata como reintento.
+        db.rollback()
+        previo = db.get(AjusteStock, clave) if clave else None
+        if previo is None:
+            raise
+        return _resultado_de_clave_ya_usada(previo, id_producto, delta)
+
     return "ok"

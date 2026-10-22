@@ -2,19 +2,17 @@
 Tests de la baja lógica de productos (issue #6).
 
 Un producto con movimientos asociados no se borra físicamente: se marca
-activo=False. Como services/movimientos todavía no existe,
-producto_service.tiene_movimientos_asociados es un stub que siempre
-devuelve False; estos tests lo parchean para simular el caso en que sí
-tiene movimientos, validando el comportamiento que deberá sostenerse
-cuando la integración real exista.
+activo=False. "Tiene movimientos" se resuelve consultando al servicio de
+Movimientos (app/clients/movimientos_client.py); en estos tests esa consulta
+se reemplaza por el stub `movimientos_stub` (ver conftest.py), así que se
+puede simular un producto con o sin historial sin levantar Movimientos.
 """
-from app.services import producto_service
 
 
 def test_eliminar_producto_con_movimientos_no_lo_borra_lo_marca_inactivo(
-    client, producto_payload, monkeypatch
+    client, producto_payload, movimientos_stub
 ):
-    monkeypatch.setattr(producto_service, "tiene_movimientos_asociados", lambda db, id_producto: True)
+    movimientos_stub.cantidad = 3
 
     creado = client.post("/api/v1/productos", json=producto_payload).json()
 
@@ -27,9 +25,9 @@ def test_eliminar_producto_con_movimientos_no_lo_borra_lo_marca_inactivo(
 
 
 def test_producto_dado_de_baja_sigue_siendo_consultable_por_id(
-    client, producto_payload, monkeypatch
+    client, producto_payload, movimientos_stub
 ):
-    monkeypatch.setattr(producto_service, "tiene_movimientos_asociados", lambda db, id_producto: True)
+    movimientos_stub.cantidad = 3
     creado = client.post("/api/v1/productos", json=producto_payload).json()
     client.delete(f"/api/v1/productos/{creado['id_producto']}")
 
@@ -40,9 +38,9 @@ def test_producto_dado_de_baja_sigue_siendo_consultable_por_id(
 
 
 def test_producto_dado_de_baja_no_aparece_en_listado_por_defecto(
-    client, producto_payload, monkeypatch
+    client, producto_payload, movimientos_stub
 ):
-    monkeypatch.setattr(producto_service, "tiene_movimientos_asociados", lambda db, id_producto: True)
+    movimientos_stub.cantidad = 3
     creado = client.post("/api/v1/productos", json=producto_payload).json()
     client.delete(f"/api/v1/productos/{creado['id_producto']}")
 
@@ -53,9 +51,9 @@ def test_producto_dado_de_baja_no_aparece_en_listado_por_defecto(
 
 
 def test_producto_dado_de_baja_aparece_con_incluir_inactivos(
-    client, producto_payload, monkeypatch
+    client, producto_payload, movimientos_stub
 ):
-    monkeypatch.setattr(producto_service, "tiene_movimientos_asociados", lambda db, id_producto: True)
+    movimientos_stub.cantidad = 3
     creado = client.post("/api/v1/productos", json=producto_payload).json()
     client.delete(f"/api/v1/productos/{creado['id_producto']}")
 
@@ -67,15 +65,15 @@ def test_producto_dado_de_baja_aparece_con_incluir_inactivos(
 
 
 def test_listado_con_incluir_inactivos_tambien_muestra_los_activos(
-    client, producto_payload, monkeypatch
+    client, producto_payload, movimientos_stub
 ):
     """incluir_inactivos=true amplía el listado, no lo reemplaza: los
     productos activos también deben seguir apareciendo."""
-    monkeypatch.setattr(producto_service, "tiene_movimientos_asociados", lambda db, id_producto: True)
+    movimientos_stub.cantidad = 3
     inactivo = client.post("/api/v1/productos", json=producto_payload).json()
     client.delete(f"/api/v1/productos/{inactivo['id_producto']}")
 
-    monkeypatch.setattr(producto_service, "tiene_movimientos_asociados", lambda db, id_producto: False)
+    movimientos_stub.cantidad = 0
     activo = client.post("/api/v1/productos", json={**producto_payload, "nombre": "Otro activo"}).json()
 
     resp = client.get("/api/v1/productos?incluir_inactivos=true")
@@ -86,11 +84,11 @@ def test_listado_con_incluir_inactivos_tambien_muestra_los_activos(
 
 
 def test_eliminar_producto_sin_movimientos_lo_borra_fisicamente(
-    client, producto_payload, monkeypatch
+    client, producto_payload, movimientos_stub
 ):
     """Caso de control: con el stub por defecto (sin movimientos), el
     comportamiento sigue siendo el borrado físico de siempre."""
-    monkeypatch.setattr(producto_service, "tiene_movimientos_asociados", lambda db, id_producto: False)
+    movimientos_stub.cantidad = 0
     creado = client.post("/api/v1/productos", json=producto_payload).json()
 
     resp = client.delete(f"/api/v1/productos/{creado['id_producto']}")

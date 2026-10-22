@@ -26,8 +26,37 @@ from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.clients import movimientos_client
 from app.database.db import Base, get_db
 from app.core.jwt_auth import obtener_usuario_actual
+
+
+class MovimientosStub:
+    """
+    Reemplaza a app.clients.movimientos_client.contar_movimientos en los tests,
+    para que ninguno dependa de tener el servicio de Movimientos corriendo.
+    Por defecto responde "0 movimientos" (producto sin historial). Cada test
+    puede cambiar `cantidad` o fijar `error` para simular otros escenarios, y
+    consultar `llamadas` para ver con qué (id_producto, token) se lo llamó.
+    """
+
+    def __init__(self):
+        self.cantidad = 0
+        self.error = None
+        self.llamadas = []
+
+    def contar(self, id_producto, token):
+        self.llamadas.append((id_producto, token))
+        if self.error is not None:
+            raise self.error
+        return self.cantidad
+
+
+@pytest.fixture(autouse=True)
+def movimientos_stub(monkeypatch):
+    stub = MovimientosStub()
+    monkeypatch.setattr(movimientos_client, "contar_movimientos", stub.contar)
+    return stub
 
 
 @pytest.fixture()

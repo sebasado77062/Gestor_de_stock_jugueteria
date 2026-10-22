@@ -12,8 +12,13 @@
           "Productos"
         ],
         "summary": "Listar Productos",
-        "description": "GET /api/v1/productos -> 200 OK con el listado.\n\nPor defecto solo devuelve productos activos. Usar\n?incluir_inactivos=true para ver también los dados de baja.",
+        "description": "GET /api/v1/productos -> 200 OK con el listado.\n\nPor defecto solo devuelve productos activos. Usar\n?incluir_inactivos=true para ver también los dados de baja.\n\nRequiere autenticación (admin o empleado). Ver services/auth para el\nlogin y app/core/jwt_auth.py para el mecanismo de validación del JWT.",
         "operationId": "listar_productos_api_v1_productos_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "incluir_inactivos",
@@ -62,6 +67,11 @@
         "summary": "Crear Producto",
         "description": "POST /api/v1/productos -> 201 Created.",
         "operationId": "crear_producto_api_v1_productos_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -96,6 +106,54 @@
         }
       }
     },
+    "/api/v1/productos/ajustes/{clave}": {
+      "get": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Obtener Ajuste",
+        "description": "GET /api/v1/productos/ajustes/{clave} -> 200 OK o 404 Not Found.\n\nIndica si un ajuste de stock con esa Idempotency-Key llegó a aplicarse.\nLo usa Movimientos para reconciliar un movimiento que quedó \"pendiente\"\n(por ejemplo, porque se cortó la respuesta de ajustar-stock): 200 significa\nque el stock SÍ se modificó; 404, que nunca se aplicó.",
+        "operationId": "obtener_ajuste_api_v1_productos_ajustes__clave__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "clave",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Clave"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AjusteStockOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/productos/{id_producto}": {
       "get": {
         "tags": [
@@ -104,6 +162,11 @@
         "summary": "Obtener Producto",
         "description": "GET /api/v1/productos/{id} -> 200 OK o 404 Not Found.\n\nDevuelve el producto exista o no esté activo (para permitir, por\nejemplo, ver el detalle de un producto dado de baja).",
         "operationId": "obtener_producto_api_v1_productos__id_producto__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "id_producto",
@@ -145,6 +208,11 @@
         "summary": "Actualizar Producto",
         "description": "PUT /api/v1/productos/{id} -> 200 OK o 404 Not Found.\n\nActualiza únicamente los datos descriptivos del producto (nombre, marca,\nprecio_venta, stock_minimo, categoria). NO modifica stock_actual bajo\nninguna circunstancia: el schema ProductoUpdate ni siquiera acepta ese\ncampo (ver issue #6). El stock se gestiona mediante movimientos.",
         "operationId": "actualizar_producto_api_v1_productos__id_producto__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "id_producto",
@@ -194,8 +262,13 @@
           "Productos"
         ],
         "summary": "Eliminar Producto",
-        "description": "DELETE /api/v1/productos/{id}.\n\nComportamiento (issue #6):\n- 204 No Content: el producto no tenía movimientos asociados y se\n  eliminó físicamente.\n- 200 OK con el producto en el body (activo=false): el producto tenía\n  movimientos asociados, así que se dio de baja lógica en lugar de\n  eliminarlo, para preservar la trazabilidad del historial.\n- 404 Not Found: no existía un producto con ese id.",
+        "description": "DELETE /api/v1/productos/{id}.\n\nSolo accesible por admin (issue #7): dar de baja o eliminar un\nproducto es una decisión más sensible que crearlo o editarlo, así que\nse restringe más que el resto del CRUD.\n\nComportamiento (issue #6):\n- 204 No Content: el producto no tenía movimientos asociados y se\n  eliminó físicamente.\n- 200 OK con el producto en el body (activo=false): el producto tenía\n  movimientos asociados, así que se dio de baja lógica en lugar de\n  eliminarlo, para preservar la trazabilidad del historial.\n- 404 Not Found: no existía un producto con ese id.\n- 503 Service Unavailable: no se pudo consultar a Movimientos para saber\n  si hay historial. No se elimina ni se da de baja nada (falla cerrada):\n  borrar físicamente un producto con movimientos perdería trazabilidad.\n\n\"Tiene movimientos asociados\" se resuelve consultando de verdad al\nservicio de Movimientos (con el token del admin que hace la baja).",
         "operationId": "eliminar_producto_api_v1_productos__id_producto__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "id_producto",
@@ -224,14 +297,94 @@
         }
       }
     },
+    "/api/v1/productos/{id_producto}/ajustar-stock": {
+      "patch": {
+        "tags": [
+          "Productos"
+        ],
+        "summary": "Ajustar Stock",
+        "description": "PATCH /api/v1/productos/{id}/ajustar-stock -> 200 OK, 404 Not Found,\n409 Conflict (sin stock) o 422 (Idempotency-Key reutilizada con otro ajuste).\n\nEndpoint consumido por el servicio de Movimientos para reflejar ventas,\ningresos, estropeos y devoluciones. El ajuste se aplica de forma atómica\n(ver producto_service.ajustar_stock_atomico), por lo que es seguro ante\nllamadas concurrentes: nunca deja stock_actual negativo.\n\nRequiere rol admin o empleado, igual que el resto de los endpoints de\nescritura. El servicio de Movimientos reenvía el JWT del usuario que\noriginó el movimiento.\n\nIdempotencia: si se envía el header opcional Idempotency-Key, el ajuste se\naplica UNA sola vez por clave (la clave se guarda en la misma transacción\nque el cambio de stock). Repetir el pedido con la misma clave y el mismo\ncontenido no vuelve a modificar el stock y devuelve 200 con el producto\nactual. Es lo que permite a Movimientos reintentar o recuperar un\nmovimiento pendiente sin riesgo de descontar dos veces.",
+        "operationId": "ajustar_stock_api_v1_productos__id_producto__ajustar_stock_patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id_producto",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id Producto"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AjusteStockIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductoOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dev/seed-productos": {
       "post": {
         "tags": [
           "Desarrollo / Datos de prueba"
         ],
         "summary": "Cargar productos de prueba (solo desarrollo)",
-        "description": "Genera e inserta `cantidad` productos con nombre, marca, categoría,\nprecio y stock aleatorios (ver app/utils/datos_prueba.py). Pensado para\nel botón \"Cargar datos de prueba\" del frontend.\n\nDevuelve 403 si HABILITAR_SEED_ENDPOINT=false en el entorno.",
+        "description": "Genera e inserta `cantidad` productos con nombre, marca, categoría,\nprecio y stock aleatorios (ver app/utils/datos_prueba.py). Pensado para\nel botón \"Cargar datos de prueba\" del frontend.\n\nRequiere estar autenticado (admin o empleado, mismo criterio que\nPOST /productos, ya que generar productos de prueba no es más sensible\nque crear un producto real). Devuelve 403 si\nHABILITAR_SEED_ENDPOINT=false en el entorno, independientemente del rol.",
         "operationId": "seed_productos_api_v1_dev_seed_productos_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "cantidad",
@@ -319,6 +472,51 @@
   },
   "components": {
     "schemas": {
+      "AjusteStockIn": {
+        "properties": {
+          "delta": {
+            "type": "integer",
+            "title": "Delta",
+            "description": "Cantidad a sumar (positivo) o restar (negativo) del stock_actual"
+          }
+        },
+        "type": "object",
+        "required": [
+          "delta"
+        ],
+        "title": "AjusteStockIn",
+        "description": "Schema de entrada para PATCH /api/v1/productos/{id}/ajustar-stock.\n\ndelta positivo -> incrementa el stock (ingreso, devolución).\ndelta negativo -> intenta decrementar el stock (venta, estropeo); si no\nhay stock suficiente, el ajuste se rechaza de forma atómica."
+      },
+      "AjusteStockOut": {
+        "properties": {
+          "clave": {
+            "type": "string",
+            "title": "Clave"
+          },
+          "id_producto": {
+            "type": "integer",
+            "title": "Id Producto"
+          },
+          "delta": {
+            "type": "integer",
+            "title": "Delta"
+          },
+          "fecha_hora": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fecha Hora"
+          }
+        },
+        "type": "object",
+        "required": [
+          "clave",
+          "id_producto",
+          "delta",
+          "fecha_hora"
+        ],
+        "title": "AjusteStockOut",
+        "description": "Registro de un ajuste de stock aplicado con una Idempotency-Key. Lo consulta\nMovimientos para saber si una operación llegó a aplicarse (ver\nGET /api/v1/productos/ajustes/{clave})."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -339,15 +537,13 @@
             "maxLength": 120,
             "minLength": 1,
             "title": "Nombre",
-            "description": "Nombre del producto",
-            "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+            "description": "Nombre del producto"
           },
           "marca": {
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 80,
-                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+                "maxLength": 80
               },
               {
                 "type": "null"
@@ -371,8 +567,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 60,
-                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+                "maxLength": 60
               },
               {
                 "type": "null"
@@ -474,15 +669,13 @@
             "maxLength": 120,
             "minLength": 1,
             "title": "Nombre",
-            "description": "Nombre del producto",
-            "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+            "description": "Nombre del producto"
           },
           "marca": {
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 80,
-                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+                "maxLength": 80
               },
               {
                 "type": "null"
@@ -506,8 +699,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 60,
-                "pattern": "^[^<>;=`\\\\{}\\x00-\\x1f\\x7f]*$"
+                "maxLength": 60
               },
               {
                 "type": "null"
@@ -557,6 +749,12 @@
           "type"
         ],
         "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

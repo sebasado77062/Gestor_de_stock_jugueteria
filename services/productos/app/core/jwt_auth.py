@@ -18,8 +18,11 @@ Este archivo es, deliberadamente, una versión reducida y de solo lectura
 del módulo equivalente en services/auth/app/core/dependencies.py: no
 puede emitir ni revocar tokens (eso es exclusivo de auth), solo validarlos.
 """
+import logging
 import os
+from typing import Optional
 
+import httpx
 import redis
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -28,11 +31,24 @@ from jose import jwt
 SECRET_KEY = os.environ["AUTH_SECRET_KEY"]
 ALGORITHM = "HS256"
 
+logger = logging.getLogger(__name__)
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# Solo modo local sin Docker (ver ejecutar_local.ps1): URL del servicio auth.
+# Cuando REDIS_URL=memory://, cada servicio tiene un Redis en memoria propio y
+# no ve los tokens que auth revoca en el suyo. Para que el logout surta efecto
+# igual, en ese modo se le pregunta a auth si el token fue revocado (ver
+# GET /api/v1/auth/tokens/{jti}/revocado). Con Redis real compartido (Docker)
+# esta variable no se usa.
+AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "").rstrip("/")
+AUTH_TIMEOUT_SEGUNDOS = float(os.getenv("AUTH_SERVICE_TIMEOUT", "2"))
+_REVOCACION_VIA_AUTH = REDIS_URL.startswith("memory://") and bool(AUTH_SERVICE_URL)
+
 if REDIS_URL.startswith("memory://"):
     # Modo local sin Redis (solo desarrollo): ver services/auth/app/core/redis_client.py.
-    # Al ser un Redis propio de este proceso, no ve los tokens revocados por
-    # auth: el logout no invalida el token acá hasta que expira solo.
+    # Es un Redis propio de este proceso. Si AUTH_SERVICE_URL está definida,
+    # la revocación se consulta a auth en lugar de a este Redis.
     import fakeredis
     _redis_client = fakeredis.FakeRedis(decode_responses=True)
 else:
@@ -41,7 +57,31 @@ else:
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _token_revocado_segun_auth(jti: str) -> bool:
+    """
+    Modo local: pregunta a auth si el jti fue revocado. Mismo criterio de
+    fail-open que con Redis: si auth no responde, no se bloquea el servicio
+    (la firma y expiración del JWT se siguen validando siempre).
+    """
+    try:
+        respuesta = httpx.get(
+            f"{AUTH_SERVICE_URL}/api/v1/auth/tokens/{jti}/revocado",
+            timeout=AUTH_TIMEOUT_SEGUNDOS,
+        )
+        if respuesta.status_code == 200:
+            return respuesta.json().get("revocado") is True
+        logger.warning(
+            "auth respondió %s al consultar la revocación; ¿está HABILITAR_CONSULTA_REVOCACION=true en auth?",
+            respuesta.status_code,
+        )
+    except (httpx.HTTPError, ValueError):
+        logger.warning("No se pudo consultar a auth si el token fue revocado; se deja pasar (fail-open).")
+    return False
+
+
 def _token_esta_revocado(jti: str) -> bool:
+    if _REVOCACION_VIA_AUTH:
+        return _token_revocado_segun_auth(jti)
     try:
         return _redis_client.exists(f"auth:blacklist:{jti}") == 1
     except redis.RedisError:
@@ -52,6 +92,18 @@ def _token_esta_revocado(jti: str) -> bool:
         # aplicando siempre — lo único que se pierde temporalmente es la
         # capacidad de revocar tokens antes de que expiren solos.
         return False
+
+
+def obtener_token_crudo(
+    credenciales: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> Optional[str]:
+    """
+    Devuelve el JWT tal como llegó en el header Authorization (o None si no
+    vino). No valida nada: la validación la hace obtener_usuario_actual. Se usa
+    cuando hay que reenviar el token del usuario a otro servicio (ver
+    app/clients/movimientos_client.py).
+    """
+    return credenciales.credentials if credenciales else None
 
 
 def obtener_usuario_actual(credenciales: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:

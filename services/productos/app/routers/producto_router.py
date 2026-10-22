@@ -1,14 +1,15 @@
 """
 Capa de Rutas para la entidad Producto.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.database.db import get_db
-from app.schemas.producto import ProductoCreate, ProductoUpdate, ProductoOut, AjusteStockIn
+from app.schemas.producto import ProductoCreate, ProductoUpdate, ProductoOut, AjusteStockIn, AjusteStockOut
 from app.services import producto_service
-from app.core.jwt_auth import requerir_rol
+from app.clients.movimientos_client import MovimientosClientError
+from app.core.jwt_auth import obtener_token_crudo, requerir_rol
 
 router = APIRouter(prefix="/api/v1/productos", tags=["Productos"])
 
@@ -36,6 +37,30 @@ def listar_productos(
     login y app/core/jwt_auth.py para el mecanismo de validación del JWT.
     """
     return producto_service.obtener_productos(db, incluir_inactivos=incluir_inactivos)
+
+
+@router.get(
+    "/ajustes/{clave}",
+    response_model=AjusteStockOut,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(requerir_rol("admin", "empleado"))],
+)
+def obtener_ajuste(clave: str, db: Session = Depends(get_db)):
+    """
+    GET /api/v1/productos/ajustes/{clave} -> 200 OK o 404 Not Found.
+
+    Indica si un ajuste de stock con esa Idempotency-Key llegó a aplicarse.
+    Lo usa Movimientos para reconciliar un movimiento que quedó "pendiente"
+    (por ejemplo, porque se cortó la respuesta de ajustar-stock): 200 significa
+    que el stock SÍ se modificó; 404, que nunca se aplicó.
+    """
+    ajuste = producto_service.obtener_ajuste_por_clave(db, clave)
+    if not ajuste:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No hay un ajuste de stock aplicado con la clave '{clave}'.",
+        )
+    return ajuste
 
 
 @router.get(
@@ -102,7 +127,12 @@ def actualizar_producto(id_producto: int, producto: ProductoUpdate, db: Session 
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(requerir_rol("admin"))],
 )
-def eliminar_producto(id_producto: int, response: Response, db: Session = Depends(get_db)):
+def eliminar_producto(
+    id_producto: int,
+    response: Response,
+    db: Session = Depends(get_db),
+    token: Optional[str] = Depends(obtener_token_crudo),
+):
     """
     DELETE /api/v1/productos/{id}.
 
@@ -117,8 +147,23 @@ def eliminar_producto(id_producto: int, response: Response, db: Session = Depend
       movimientos asociados, así que se dio de baja lógica en lugar de
       eliminarlo, para preservar la trazabilidad del historial.
     - 404 Not Found: no existía un producto con ese id.
+    - 503 Service Unavailable: no se pudo consultar a Movimientos para saber
+      si hay historial. No se elimina ni se da de baja nada (falla cerrada):
+      borrar físicamente un producto con movimientos perdería trazabilidad.
+
+    "Tiene movimientos asociados" se resuelve consultando de verdad al
+    servicio de Movimientos (con el token del admin que hace la baja).
     """
-    eliminado = producto_service.eliminar_producto(db, id_producto)
+    try:
+        eliminado = producto_service.eliminar_producto(db, id_producto, token)
+    except MovimientosClientError as error:
+        detalle = error.mensaje
+        if error.status_code >= 500:
+            detalle += (
+                " No se eliminó el producto para no perder la trazabilidad del historial; "
+                "reintentá en unos instantes."
+            )
+        raise HTTPException(status_code=error.status_code, detail=detalle)
     if not eliminado:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -141,9 +186,15 @@ def eliminar_producto(id_producto: int, response: Response, db: Session = Depend
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(requerir_rol("admin", "empleado"))],
 )
-def ajustar_stock(id_producto: int, ajuste: AjusteStockIn, db: Session = Depends(get_db)):
+def ajustar_stock(
+    id_producto: int,
+    ajuste: AjusteStockIn,
+    db: Session = Depends(get_db),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key", max_length=100),
+):
     """
-    PATCH /api/v1/productos/{id}/ajustar-stock -> 200 OK, 404 Not Found o 409 Conflict.
+    PATCH /api/v1/productos/{id}/ajustar-stock -> 200 OK, 404 Not Found,
+    409 Conflict (sin stock) o 422 (Idempotency-Key reutilizada con otro ajuste).
 
     Endpoint consumido por el servicio de Movimientos para reflejar ventas,
     ingresos, estropeos y devoluciones. El ajuste se aplica de forma atómica
@@ -153,13 +204,27 @@ def ajustar_stock(id_producto: int, ajuste: AjusteStockIn, db: Session = Depends
     Requiere rol admin o empleado, igual que el resto de los endpoints de
     escritura. El servicio de Movimientos reenvía el JWT del usuario que
     originó el movimiento.
+
+    Idempotencia: si se envía el header opcional Idempotency-Key, el ajuste se
+    aplica UNA sola vez por clave (la clave se guarda en la misma transacción
+    que el cambio de stock). Repetir el pedido con la misma clave y el mismo
+    contenido no vuelve a modificar el stock y devuelve 200 con el producto
+    actual. Es lo que permite a Movimientos reintentar o recuperar un
+    movimiento pendiente sin riesgo de descontar dos veces.
     """
-    resultado = producto_service.ajustar_stock_atomico(db, id_producto, ajuste.delta)
+    resultado = producto_service.ajustar_stock_atomico(
+        db, id_producto, ajuste.delta, clave=idempotency_key
+    )
 
     if resultado is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No se encontró un producto con id_producto={id_producto}.",
+        )
+    if resultado == producto_service.CLAVE_REUTILIZADA:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La Idempotency-Key ya fue usada para un ajuste distinto (otro producto u otra cantidad).",
         )
     if resultado == "sin_stock":
         raise HTTPException(
