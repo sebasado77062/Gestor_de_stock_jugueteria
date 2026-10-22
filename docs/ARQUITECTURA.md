@@ -14,7 +14,7 @@ flowchart LR
         PROD["services/productos (FastAPI)<br/>puerto 8000"]
         MOV["services/movimientos (FastAPI)<br/>puerto 8002"]
         WORKER["services/worker-alertas<br/>(consumidor RabbitMQ)"]
-        REDIS[("Redis<br/>blacklist + idempotencia")]
+        REDIS[("Redis<br/>blacklist de tokens")]
         RABBIT[("RabbitMQ<br/>exchange stock.events")]
         DB_AUTH[("SQLite<br/>auth_data")]
         DB_PROD[("SQLite<br/>productos_data")]
@@ -31,8 +31,9 @@ flowchart LR
     PROD --> REDIS
     MOV --> REDIS
 
-    MOV -->|"PATCH /ajustar-stock<br/>(token del usuario)"| PROD
-    MOV -->|"publish movimiento.registrado"| RABBIT
+    MOV -->|"PATCH /ajustar-stock<br/>(token del usuario + Idempotency-Key)"| PROD
+    PROD -->|"GET .../movimientos/cantidad<br/>(antes de borrar un producto)"| MOV
+    MOV -->|"outbox -> publish<br/>movimiento.registrado"| RABBIT
     RABBIT -->|"consume"| WORKER
 
     AUTH -->|"persiste usuarios"| DB_AUTH
@@ -48,14 +49,18 @@ dependencias y (cuando corresponde) su propia base de datos:
   crear usuarios y firmar tokens. Persiste usuarios en su propia base.
 - **`productos`**: dueño del catálogo y del `stock_actual`. Valida JWT
   localmente (mismo `AUTH_SECRET_KEY` que `auth`), consulta Redis para la
-  blacklist de tokens revocados, y expone un endpoint atómico de ajuste de
-  stock que consume `movimientos`.
+  blacklist de tokens revocados, y expone un endpoint atómico e idempotente
+  de ajuste de stock que consume `movimientos`. Antes de borrar un producto
+  le pregunta a `movimientos` si tiene historial.
 - **`movimientos`**: registra el histórico de movimientos (solo inserciones).
   Orquesta la actualización de stock llamando a `productos` por REST
-  (nunca lee su base directamente). Publica eventos de negocio en RabbitMQ.
+  (nunca lee su base directamente) mediante una saga con recuperación hacia
+  adelante, y publica eventos de negocio en RabbitMQ a través de un outbox
+  transaccional.
 - **`worker-alertas`**: consumidor asíncrono. Escucha el exchange
-  `stock.events` y evalúa si corresponde alertar stock bajo. Es idempotente
-  por `id_movimiento` y tiene reintentos con backoff + DLQ.
+  `stock.events` y evalúa si corresponde alertar stock bajo
+  (`stock_actual <= stock_minimo`). Es idempotente por `id_movimiento`, tiene
+  reintentos con backoff + DLQ y expone `GET /health` (puerto 8003).
 - **`frontend`**: nginx sirviendo HTML/JS estático (en la ejecución local sin
   Docker lo sirve `python -m http.server`). Genera su `config.js` en runtime a
   partir de variables de entorno. Ver la sección "Frontend: validación,
@@ -90,53 +95,78 @@ El sistema usa **ambos** estilos de comunicación, cada uno donde corresponde:
 | Tipo | Entre | Mecanismo | Por qué |
 |---|---|---|---|
 | **Síncrona** | `movimientos` → `productos` | REST (`PATCH /ajustar-stock`) | El movimiento no puede considerarse exitoso si el stock no se ajustó. La respuesta HTTP lleva el resultado (200/409) y el cliente espera. |
-| **Asíncrona** | `movimientos` → `worker-alertas` | RabbitMQ (`movimiento.registrado`) | La alerta de stock bajo no bloquea la respuesta al usuario. Si el worker está caído, el evento queda encolado y se procesa cuando vuelva. |
+| **Asíncrona** | `movimientos` → `worker-alertas` | RabbitMQ (`movimiento.registrado`) | La alerta de stock bajo no bloquea la respuesta al usuario. El evento se guarda primero en un outbox (misma transacción que confirma el movimiento) y un relay lo publica: si RabbitMQ o el worker están caídos, el evento espera y se procesa cuando vuelvan. |
 
 Regla general: **lo que necesita respuesta inmediata es síncrono; lo que
 puede esperar o es tolerante a fallos es asíncrono.**
 
 ## Flujo de `POST /api/v1/movimientos`
 
+Registrar un movimiento toca dos bases de datos de servicios distintos, así
+que no hay una transacción que las abarque. Se resuelve con una **saga de
+"intención primero"**: se guarda el movimiento como `pendiente`, se ajusta el
+stock con una clave de operación (idempotente en `productos`) y recién entonces
+se confirma, junto con su evento en el outbox.
+
 ```mermaid
 sequenceDiagram
     participant FE as Frontend
     participant MOV as movimientos
-    participant R as Redis
     participant P as productos
+    participant OB as outbox (BD de movimientos)
     participant MQ as RabbitMQ
 
     FE->>MOV: POST /movimientos<br/>(JWT + Idempotency-Key)
     MOV->>MOV: valida JWT
-    MOV->>R: ¿Idempotency-Key ya procesada?
-    alt Ya procesada
-        R-->>MOV: id_movimiento previo
-        MOV-->>FE: 201 + mismo movimiento
-    else Nueva
-        MOV->>P: PATCH /ajustar-stock (delta, JWT)
-        alt Stock insuficiente
-            P-->>MOV: 409 Conflict
-            MOV-->>FE: 409
+    MOV->>MOV: 1. INSERT movimiento (pendiente, operacion_id)<br/>[clave única: ya existía? -> toma ese]
+    alt Ya estaba confirmado
+        MOV-->>FE: 201 + mismo movimiento (sin tocar el stock)
+    else Nuevo o pendiente
+        MOV->>P: 2. PATCH /ajustar-stock<br/>(delta, JWT, Idempotency-Key = operacion_id)
+        alt Stock insuficiente / producto inexistente (409 / 404)
+            P-->>MOV: 409 / 404 (el stock no se tocó)
+            MOV->>MOV: descarta la intención
+            MOV-->>FE: 409 / 404
+        else Productos no responde (timeout, caído, 5xx)
+            P--xMOV: sin respuesta (el stock pudo haber cambiado o no)
+            MOV-->>FE: 503 (el movimiento queda pendiente)
         else Ajuste OK
             P-->>MOV: 200 + producto actualizado
-            MOV->>MOV: persiste Movimiento
-            MOV->>R: guarda Idempotency-Key (TTL 24h)
-            MOV->>MQ: publish movimiento.registrado
+            MOV->>OB: 3. en UNA transacción: estado=confirmado<br/>+ INSERT evento movimiento.registrado
             MOV-->>FE: 201 + movimiento
         end
     end
+    Note over OB,MQ: el relay publica los eventos pendientes<br/>(con confirmación del broker), con reintentos
+    OB->>MQ: publish movimiento.registrado
 ```
 
-Si RabbitMQ está caído, el evento no se publica pero el movimiento **sí**
-queda persistido: la respuesta al usuario no se bloquea por una falla de
-mensajería (se loguea y sigue).
+**Cómo se recupera cada falla**
+
+| Falla | Qué queda | Cómo se resuelve |
+|---|---|---|
+| `productos` rechaza (404/409) | Nada: la intención se descarta | No hace falta |
+| `productos` no responde o la respuesta se pierde | Movimiento `pendiente`; el stock pudo haber cambiado | Reintento con la misma clave (el ajuste es idempotente: aplica ahora o responde que ya estaba aplicado) o reconciliación de un admin |
+| Falla el guardado del paso 3 | Stock ya ajustado y movimiento `pendiente` | Igual que arriba: se avanza hasta confirmar. No se "deshace" el stock |
+| RabbitMQ caído | Movimiento `confirmado` con su evento en el outbox sin publicar | El relay reintenta con backoff y publica cuando el broker vuelve; sobrevive a reinicios |
+
+**Reconciliación** (`POST /api/v1/movimientos/reconciliar`, solo admin): para
+cada pendiente con cierta antigüedad consulta a `productos`
+(`GET /api/v1/productos/ajustes/{clave}`) si la operación se aplicó. Si se
+aplicó, **confirma**; si no, **descarta**. **Nunca vuelve a ajustar el stock**,
+para no ejecutar por sorpresa algo que el usuario abandonó. Usa el token del
+admin porque los servicios no tienen credenciales propias.
+
+**La idempotencia es atómica**: la `Idempotency-Key` se guarda en `movimientos`
+con un índice único, así que dos pedidos simultáneos con la misma clave no
+pueden crear dos movimientos. Reutilizarla con otro contenido da `422`.
+Además, `productos` guarda la clave del ajuste en la misma transacción que
+cambia el stock (tabla `ajustes_stock`).
 
 **Quién genera la `Idempotency-Key`**: el frontend (un UUID por intento de
 registro). Si el intento termina sin respuesta definitiva (timeout, corte de
-red o 5xx) y los datos del formulario no cambiaron, el reintento reutiliza la
-**misma** clave; con una respuesta definitiva (< 500) o con datos distintos se
-genera una clave nueva. Así, un reintento tras un timeout no descuenta el
-stock dos veces *si el primer intento llegó a registrar la clave* (ver
-limitaciones).
+red, 5xx o 401) y los datos del formulario no cambiaron, el reintento reutiliza
+la **misma** clave; con una respuesta definitiva o con datos distintos se genera
+una clave nueva. Así un reintento nunca descuenta el stock dos veces.
 
 ## Frontend: validación, errores y envíos
 
@@ -193,14 +223,20 @@ virtual (Python 3.10 a 3.13):
 | `productos` | 8000 | Sí |
 | `movimientos` | 8002 | Sí (usa `productos` por HTTP) |
 | `frontend` | 8080 | Sí (`python -m http.server`) |
-| Redis | - | Reemplazado por `fakeredis` (`REDIS_URL=memory://`), uno por proceso |
+| Redis | - | Reemplazado por `fakeredis` (`REDIS_URL=memory://`), uno por proceso; `productos` y `movimientos` consultan a `auth` si un token fue revocado |
 | RabbitMQ y `worker-alertas` | - | **No corren** |
 
 Consecuencias de no tener RabbitMQ: los movimientos se registran con
-normalidad, pero la publicación del evento falla y queda solo como error en el
-log de `movimientos` (el `201` no se ve afectado), y por lo tanto no se
-procesan alertas de stock bajo. Consecuencias del Redis en memoria: ver la
-última limitación de la lista siguiente.
+normalidad y su evento queda guardado en el outbox de `movimientos` (el relay
+que lo publicaría está desactivado en este modo), y por lo tanto no se procesan
+alertas de stock bajo.
+
+El logout **sí** invalida el token en los tres servicios: como cada uno tiene su
+propio Redis en memoria, `productos` y `movimientos` le preguntan a `auth`
+(`GET /api/v1/auth/tokens/{jti}/revocado`, habilitado solo con
+`HABILITAR_CONSULTA_REVOCACION=true`) si el token fue revocado. Es una llamada
+HTTP extra por request, solo en este modo; si `auth` no responde se deja pasar
+el token (mismo criterio fail-open que con Redis).
 
 ## Flujo del evento `movimiento.registrado`
 
@@ -213,7 +249,7 @@ flowchart LR
     Q3["cola<br/>alertas.stock.bajo.dlq"]
     WORKER["worker-alertas<br/>(consumidor)"]
 
-    MOV -->|"routing key:<br/>movimiento.registrado"| EX
+    MOV -->|"outbox -> routing key:<br/>movimiento.registrado"| EX
     EX --> Q1
     Q1 -->|"ack"| WORKER
     Q1 -.->|"nack<br/>(reintento)"| Q2
@@ -234,8 +270,9 @@ sequenceDiagram
     participant R as Router
     participant S as Service
     participant DB as Base de datos
+    participant MOV as movimientos
 
-    C->>R: DELETE /api/v1/productos/{id}
+    C->>R: DELETE /api/v1/productos/{id}<br/>(JWT del admin)
     R->>S: eliminar_producto(id)
     S->>DB: obtener_producto_por_id(id)
     alt Producto no existe
@@ -244,12 +281,18 @@ sequenceDiagram
         R-->>C: 404 Not Found
     else Producto existe
         DB-->>S: Producto
-        S->>S: tiene_movimientos_asociados(id)?
-        alt Tiene movimientos
+        S->>MOV: GET /productos/{id}/movimientos/cantidad<br/>(mismo JWT)
+        alt Movimientos no responde
+            MOV--xS: sin respuesta
+            S-->>R: error
+            R-->>C: 503 (no se borra ni se da de baja nada)
+        else Tiene movimientos
+            MOV-->>S: cantidad > 0
             S->>DB: UPDATE activo = false
             S-->>R: Producto (activo=false)
             R-->>C: 200 OK + producto en el body
         else Sin movimientos
+            MOV-->>S: cantidad = 0
             S->>DB: DELETE físico
             S-->>R: Producto (eliminado)
             R-->>C: 204 No Content
@@ -257,17 +300,22 @@ sequenceDiagram
     end
 ```
 
-Nota: el método `tiene_movimientos_asociados` en `productos` sigue siendo un
-placeholder (`return False`) — la integración real con `movimientos`
-consultaría su API o compartiría un evento. Queda documentado como deuda
-técnica.
+`tiene_movimientos_asociados` consulta de verdad a `movimientos` por su API
+REST (cuenta movimientos confirmados y pendientes) con el token del admin que
+hace la baja. Si `movimientos` no responde, la operación **falla cerrada**
+(503): no se supone "sin historial", porque eso llevaría a borrar físicamente un
+producto con movimientos. La consulta y el borrado no forman una transacción
+(son servicios distintos): un movimiento registrado en los milisegundos entre
+ambos pasos no se vería. `productos` llama a `movimientos` solo en tiempo de
+ejecución; en `docker-compose.yml` no hay `depends_on` en esa dirección para no
+crear un ciclo.
 
 ## Decisión de persistencia
 
 Cada servicio es dueño de sus datos:
 
-- `productos` → base propia con el catálogo y `stock_actual`.
-- `movimientos` → base propia con el histórico.
+- `productos` → base propia con el catálogo, `stock_actual` y los ajustes aplicados con clave de idempotencia.
+- `movimientos` → base propia con el histórico, las claves de idempotencia y el outbox de eventos.
 - `worker-alertas` → base propia (SQLite local) solo para idempotencia.
 
 **Ningún servicio accede directamente a la base de otro.** Toda
@@ -293,49 +341,39 @@ la base resuelve la carrera atómicamente. Ver el `README.md` raíz, sección
 Cada servicio documenta sus propias limitaciones en detalle en su README.
 A nivel de sistema completo, las más relevantes hoy son:
 
-- **`tiene_movimientos_asociados` no está integrado**: el servicio
-  `productos` no consulta a `movimientos` para decidir si un producto se
-  puede borrar físicamente. Hoy siempre devuelve `False`, así que la baja
-  lógica nunca se activa en la práctica.
 - **SQLite en lugar de un motor cliente-servidor**: adecuado para la etapa
   actual del proyecto, pero limita la concurrencia real y la separación
   física de datos. Migrar a Postgres es un cambio acotado (la capa de
-  SQLAlchemy está aislada en `database/db.py` de cada servicio).
-- **`worker-alertas` no tiene healthcheck HTTP**: es un proceso de
-  background, se monitorea por logs (`docker compose logs -f
-  worker-alertas`). `docker compose ps` no puede mostrar `healthy` para él.
-- **Sin pipeline de CI**: los tests existen y pasan localmente, pero
-  ejecutarlos es un paso manual. Falta un workflow de GitHub Actions que
-  corra `pytest` en cada push.
-- **Ajuste de stock y registro del movimiento no son atómicos**:
-  `movimientos` primero ajusta el stock en `productos` (HTTP) y recién
-  después persiste el movimiento. Si ese guardado falla, o si `productos`
-  aplicó el ajuste pero la respuesta no llegó, el stock queda modificado sin
-  movimiento y no hay compensación.
-- **Idempotencia parcial**: en `movimientos` la `Idempotency-Key` se consulta
-  antes y se guarda después (`get` y `set` separados, no `SET NX`), así que
-  dos requests simultáneos con la misma clave pueden pasar ambos, y la clave
-  solo se registra si el primer intento llegó a completarse. `POST /productos`
-  no tiene idempotencia: en esa pantalla el frontend solo bloquea el botón y
-  avisa ante fallas de red.
-- **Eventos perdidos si RabbitMQ está caído**: el fallo de publicación se
-  loguea y no se reintenta (no hay patrón outbox), por lo que esa alerta de
-  stock bajo se pierde.
-- **Criterio de stock bajo distinto entre UI y worker**: la tabla de
-  Inventario marca "stock bajo" con `stock_actual <= stock_minimo`, mientras
-  que `worker-alertas` solo alerta con `stock_actual < stock_minimo`. Con el
-  stock igual al mínimo la UI lo marca y no se genera alerta.
+  SQLAlchemy está aislada en `database/db.py` de cada servicio). Además, el
+  relay del outbox está pensado para **una sola instancia** de `movimientos`
+  escribiendo su base.
+- **Los movimientos `pendiente` necesitan un reintento o una reconciliación
+  manual**: no hay un proceso automático que los resuelva porque los servicios
+  no tienen credenciales propias (un reintento usa el token del usuario; la
+  reconciliación, el de un admin). Hasta entonces el stock puede estar ya
+  ajustado con el movimiento todavía sin confirmar; el historial lo muestra
+  con estado `pendiente`.
+- **Ventana residual al reconciliar**: si un pendiente de más de 5 minutos se
+  descarta por no haberse aplicado en el mismo instante en que el cliente lo
+  reintenta, el stock podría cambiar sin que quede movimiento. Cerrarlo del
+  todo exigiría poder cancelar la clave en `productos`.
+- **Baja de producto no atómica con la consulta a `movimientos`**: ver el flujo
+  de `DELETE` más arriba.
+- **Entrega at-least-once**: un evento puede publicarse más de una vez (si el
+  proceso cae entre publicar y marcarlo); el worker es idempotente por
+  `id_movimiento`. Si ninguna cola está enlazada al exchange (el worker nunca
+  arrancó), los eventos se acumulan en el outbox en lugar de perderse.
+- **Eventos de movimientos reconciliados** llevan el stock actual del producto,
+  no el del instante del movimiento (no se conserva).
+- **`POST /productos` no tiene idempotencia**: en esa pantalla el frontend solo
+  bloquea el botón y avisa ante fallas de red.
 - **Seguridad pensada para desarrollo**: CORS abierto (`allow_origins=["*"]`)
   en los tres servicios, tokens guardados en `localStorage`, JWT firmados con
   un secreto compartido (HS256) y credenciales por defecto (RabbitMQ y
   usuarios de prueba) documentadas.
-- **`fakeredis` en modo local**: cuando se corre sin Docker
-  (`ejecutar_local.ps1`), `auth`, `productos` y `movimientos` usan cada uno su
-  propio `fakeredis` (Redis en memoria por proceso). Al hacer logout, `auth`
-  revoca el access token y el refresh token en su Redis, así que `auth` los
-  rechaza, pero `productos` y `movimientos` consultan el suyo (vacío) y siguen
-  aceptando ese access token hasta que expira (15 min). Con `docker compose`,
-  que usa un Redis compartido, el token queda revocado en los tres servicios.
-  Además, el estado en memoria (bloqueo por intentos de login, rotación de
-  refresh tokens, idempotencia de movimientos) se pierde al reiniciar el
-  servicio.
+- **Modo local sin Docker** (`ejecutar_local.ps1`): sin RabbitMQ ni worker (los
+  eventos quedan en el outbox), con un Redis en memoria por servicio. El logout
+  sí es efectivo (se consulta a `auth`), a costa de una llamada HTTP por request;
+  el estado en memoria de `auth` (bloqueo por intentos de login, rotación de
+  refresh tokens) se pierde al reiniciar el servicio.
+- **El frontend no tiene tests automáticos.**

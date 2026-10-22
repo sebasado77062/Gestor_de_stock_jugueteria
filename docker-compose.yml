@@ -68,6 +68,10 @@ services:
       HABILITAR_SEED_ENDPOINT: ${HABILITAR_SEED_ENDPOINT:-true}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
+      # Productos le pregunta a Movimientos si un producto tiene historial antes
+      # de borrarlo (solo en tiempo de ejecución). Por eso NO hay depends_on de
+      # movimientos: movimientos ya depende de productos y sería un ciclo.
+      MOVIMIENTOS_SERVICE_URL: http://movimientos:8000
     volumes:
       - productos_data:/app/data
     ports:
@@ -93,6 +97,8 @@ services:
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Definí AUTH_SECRET_KEY en .env (ver .env.example)}
       REDIS_URL: redis://redis:6379/0
       RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS:-admin123}@rabbitmq:5672/
+      # Cada cuántos segundos el relay del outbox reintenta publicar eventos pendientes.
+      OUTBOX_INTERVALO_SEGUNDOS: ${OUTBOX_INTERVALO_SEGUNDOS:-5}
     volumes:
       - movimientos_data:/app/data
     ports:
@@ -119,15 +125,25 @@ services:
     environment:
       PRODUCTOS_SERVICE_URL: http://productos:8000
       RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS:-admin123}@rabbitmq:5672/
+      WORKER_HEALTH_PORT: 8003
     volumes:
       - alertas_data:/app/data
+    ports:
+      - "${WORKER_PORT:-8003}:8003"
     depends_on:
       productos:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      # No es un servicio HTTP: no tiene healthcheck propio, se verifica
-      # por logs (docker compose logs -f worker-alertas).
+    # El worker consume una cola, pero expone GET /health (ver
+    # services/worker-alertas/health.py): 200 solo si está consumiendo y su
+    # latido es reciente. La imagen no trae curl, por eso se usa Python.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
 
   frontend:
     build:

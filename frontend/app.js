@@ -297,8 +297,6 @@ function traducirErrorValidacion(err) {
       return "Ingresá un texto válido.";
     case "literal_error":
       return "Elegí una de las opciones disponibles.";
-    case "string_pattern_mismatch":
-      return "Contiene caracteres no permitidos (por ejemplo < > ; = { }).";
     default:
       return err.msg || "El valor ingresado no es válido.";
   }

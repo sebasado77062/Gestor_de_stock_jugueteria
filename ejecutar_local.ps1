@@ -1,7 +1,12 @@
 # Levanta auth + productos + movimientos + frontend en Windows SIN Docker y SIN Redis
 # (usa un Redis en memoria). Requiere Python 3.10 a 3.13 (recomendado 3.12).
 # Nota: RabbitMQ y el worker de alertas NO corren en este modo. Los movimientos se
-# registran igual (la publicacion del evento falla y queda solo en el log).
+# registran igual: el evento queda guardado en el outbox de Movimientos (no se publica
+# porque no hay broker; el relay esta desactivado aqui para no llenar el log de errores).
+# El logout SI invalida el token en los tres servicios: como cada uno tiene su propio
+# Redis en memoria, productos y movimientos le preguntan a auth si el token fue revocado.
+# Si tenes Docker instalado, ejecutar_docker.ps1 levanta el sistema COMPLETO (con RabbitMQ
+# y el worker). Ambos scripts usan los mismos puertos: no los corras a la vez.
 #
 # Uso (desde la carpeta del proyecto ya descomprimida, en PowerShell):
 #   powershell -ExecutionPolicy Bypass -File .\ejecutar_local.ps1
@@ -91,14 +96,17 @@ window.APP_CONFIG = {
 $comunes = "`$env:AUTH_SECRET_KEY='$secreto'; `$env:REDIS_URL='memory://';"
 
 $cmdAuth = "$comunes " +
+  "`$env:HABILITAR_CONSULTA_REVOCACION='true'; " +
   "`$env:HABILITAR_USUARIOS_PRUEBA='true'; " +
   "`$env:PRUEBA_ADMIN_EMAIL='admin@test.com'; `$env:PRUEBA_ADMIN_PASSWORD='admin12345'; " +
   "`$env:PRUEBA_EMPLEADO_EMAIL='empleado@test.com'; `$env:PRUEBA_EMPLEADO_PASSWORD='empleado123'; " +
   "cd '$raiz\services\auth'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8001"
 
-$cmdProductos = "$comunes cd '$raiz\services\productos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8000"
+# Productos y movimientos consultan a auth si un token fue revocado (logout) y
+# productos consulta a movimientos si un producto tiene historial antes de borrarlo.
+$cmdProductos = "$comunes `$env:AUTH_SERVICE_URL='http://localhost:8001'; `$env:MOVIMIENTOS_SERVICE_URL='http://localhost:8002'; cd '$raiz\services\productos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8000"
 
-$cmdMovimientos = "$comunes `$env:PRODUCTOS_SERVICE_URL='http://localhost:8000'; cd '$raiz\services\movimientos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8002"
+$cmdMovimientos = "$comunes `$env:AUTH_SERVICE_URL='http://localhost:8001'; `$env:OUTBOX_RELAY_HABILITADO='false'; `$env:PRODUCTOS_SERVICE_URL='http://localhost:8000'; cd '$raiz\services\movimientos'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8002"
 
 $cmdFront = "cd '$raiz\frontend'; & '$py' -m http.server 8080"
 
@@ -131,6 +139,6 @@ if ($listo) {
 Write-Host "  Auth (Swagger):      http://localhost:8001/docs"
 Write-Host "  Productos (Swagger): http://localhost:8000/docs"
 Write-Host "  Movimientos (Swagger): http://localhost:8002/docs"
-Write-Host "  (Sin RabbitMQ: los avisos de stock bajo no se procesan; es normal ver un error de AMQP en la ventana de Movimientos)" -ForegroundColor Yellow
+Write-Host "  (Sin RabbitMQ: los avisos de stock bajo no se procesan; los eventos quedan guardados en el outbox de Movimientos)" -ForegroundColor Yellow
 Write-Host "  Usuarios de prueba:  admin@test.com / admin12345  |  empleado@test.com / empleado123"
 Start-Process "http://localhost:8080"

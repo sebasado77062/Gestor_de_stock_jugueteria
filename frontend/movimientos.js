@@ -268,7 +268,13 @@ function renderizarTablaMovimientos(movimientos) {
         <tr>
           <td>${mov.id_movimiento}</td>
           <td>${formatearFecha(mov.fecha_hora)}</td>
-          <td><span class="badge-categoria ${etiqueta.clase}">${etiqueta.texto}</span></td>
+          <td>
+            <span class="badge-categoria ${etiqueta.clase}">${etiqueta.texto}</span>${
+              mov.estado === "pendiente"
+                ? `<span class="badge-pendiente" title="Se guardó el movimiento pero todavía no se confirmó el ajuste de stock. Reintentá el registro o pedí a un administrador que reconcilie.">Pendiente</span>`
+                : ""
+            }
+          </td>
           <td>#${mov.id_producto}</td>
           <td>${mov.cantidad_movida}</td>
           <td>${escaparHtml(mov.dni_cliente || "—")}</td>
@@ -373,10 +379,12 @@ formMovimiento.addEventListener("submit", async (evento) => {
 
     const data = await leerJson(resp);
 
-    // Con cualquier respuesta definitiva (< 500) el intento terminó: el
-    // próximo envío usará una clave nueva. Con 5xx el resultado es incierto:
-    // se conserva la clave para que el reintento no duplique el movimiento.
-    if (resp.status < 500) intentoMovimiento = null;
+    // Con una respuesta definitiva (< 500, salvo 401) el intento terminó: el
+    // próximo envío usará una clave nueva. Con 5xx el resultado es incierto, y
+    // con 401 el servidor pudo haber dejado el movimiento "pendiente" (ver
+    // Movimientos): en ambos casos se conserva la clave para que el reintento
+    // lo complete en lugar de duplicarlo.
+    if (resp.status < 500 && resp.status !== 401) intentoMovimiento = null;
 
     if (resp.ok) {
       mostrarEstado("Movimiento registrado correctamente. El stock del producto fue actualizado.", "ok");
@@ -411,6 +419,9 @@ formMovimiento.addEventListener("submit", async (evento) => {
       mostrarEstado(data.mensaje || "El producto indicado no existe.", "error");
     } else {
       mostrarEstado(data.mensaje || data.detail || "Ocurrió un error al registrar el movimiento.", "error");
+      // Con un error del servidor el movimiento puede haber quedado "pendiente":
+      // se refresca el historial para que se vea (con su etiqueta).
+      if (resp.status >= 500) cargarMovimientos();
     }
   } catch (error) {
     if (error.sesionExpirada) return;
