@@ -48,8 +48,14 @@ def marcar_como_procesado(conexion: sqlite3.Connection, id_movimiento: int, id_p
 
 def evaluar_y_generar_alerta(payload: dict) -> bool:
     """
-    Evalúa si corresponde generar una alerta de stock bajo (stock_actual <
-    stock_minimo), a partir del snapshot incluido en el propio evento.
+    Evalúa si corresponde generar una alerta de stock bajo, a partir del
+    snapshot incluido en el propio evento.
+
+    Regla: hay stock bajo cuando stock_actual <= stock_minimo (el mínimo es el
+    punto de reposición: estar EN el mínimo ya es "hay que reponer"). Es la
+    misma regla que usa la tabla de Inventario del frontend (frontend/app.js),
+    para que una pantalla y la alerta nunca discrepen. Con stock_minimo = 0
+    también alerta cuando el stock llega a 0 (agotado).
 
     Devuelve True si se generó la alerta, False si el stock está OK.
     """
@@ -57,7 +63,7 @@ def evaluar_y_generar_alerta(payload: dict) -> bool:
     stock_actual = payload["stock_actual"]
     stock_minimo = payload["stock_minimo"]
 
-    if stock_actual < stock_minimo:
+    if stock_actual <= stock_minimo:
         print(
             f"{UMBRAL_LOG} producto={payload.get('nombre_producto', id_producto)} "
             f"(id={id_producto}) stock_actual={stock_actual} stock_minimo={stock_minimo} "

@@ -47,7 +47,7 @@ def test_marcar_como_procesado_es_idempotente(db_idempotencia):
     assert ya_fue_procesado(db_idempotencia, id_movimiento=1) is True
 
 
-def test_genera_alerta_si_stock_actual_por_debajo_del_minimo():
+def test_genera_alerta_si_stock_actual_por_debajo_del_minimo():  # caso base; ver también el parametrizado
     payload = {
         "id_movimiento": 1,
         "id_producto": 5,
@@ -56,6 +56,28 @@ def test_genera_alerta_si_stock_actual_por_debajo_del_minimo():
         "stock_minimo": 5,
     }
     assert evaluar_y_generar_alerta(payload) is True
+
+
+@pytest.mark.parametrize(
+    "stock_actual,stock_minimo,debe_alertar",
+    [
+        (2, 5, True),    # por debajo del mínimo
+        (5, 5, True),    # EXACTAMENTE en el mínimo: antes no alertaba (< estricto) y el frontend sí lo marcaba
+        (6, 5, False),   # apenas por encima
+        (0, 0, True),    # mínimo 0 y producto agotado
+        (1, 0, False),   # mínimo 0 con stock
+    ],
+)
+def test_la_regla_de_stock_bajo_es_menor_o_igual_al_minimo(stock_actual, stock_minimo, debe_alertar):
+    """Misma regla que la tabla de Inventario del frontend: stock_actual <= stock_minimo."""
+    payload = {
+        "id_movimiento": 3,
+        "id_producto": 5,
+        "nombre_producto": "Auto a fricción",
+        "stock_actual": stock_actual,
+        "stock_minimo": stock_minimo,
+    }
+    assert evaluar_y_generar_alerta(payload) is debe_alertar
 
 
 def test_no_genera_alerta_si_hay_stock_suficiente():

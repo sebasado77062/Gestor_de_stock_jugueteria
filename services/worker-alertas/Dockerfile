@@ -14,4 +14,7 @@ COPY . .
 # Carpeta para la base sqlite local de idempotencia (se monta como volumen en compose)
 RUN mkdir -p /app/data
 
+# Puerto del healthcheck HTTP (GET /health), ver health.py y docker-compose.yml
+EXPOSE 8003
+
 CMD ["python", "worker.py"]

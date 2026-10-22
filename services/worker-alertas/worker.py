@@ -2,7 +2,8 @@
 Worker de Alertas de Stock Bajo.
 
 Consume el evento "movimiento.registrado" (ver services/movimientos/EVENTOS.md)
-y evalúa si corresponde generar una alerta de stock bajo. Es idempotente por
+y evalúa si corresponde generar una alerta de stock bajo (stock_actual <=
+stock_minimo, ver alertas.py). Expone GET /health (ver health.py). Es idempotente por
 id_movimiento (ver alertas.py) e implementa reintentos con backoff y una
 dead-letter queue (DLQ) final para mensajes que fallan reiteradamente.
 
@@ -28,6 +29,7 @@ import time
 
 import pika
 
+import health
 from alertas import (
     evaluar_y_generar_alerta,
     inicializar_db,
@@ -42,6 +44,8 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://admin:admin123@localhost:5672/"
 ALERTAS_DB_PATH = os.getenv("ALERTAS_DB_PATH", "/app/data/alertas_procesadas.db")
 MAX_REINTENTOS = int(os.getenv("MAX_REINTENTOS", "5"))
 RETRY_TTL_MS = int(os.getenv("RETRY_TTL_MS", "5000"))  # backoff fijo de 5s entre reintentos
+HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "8003"))
+HEARTBEAT_SEGUNDOS = float(os.getenv("WORKER_HEARTBEAT_SEGUNDOS", "10"))
 
 EXCHANGE_EVENTOS = "stock.events"
 EXCHANGE_DLX = "stock.events.dlx"
@@ -140,6 +144,12 @@ def procesar_mensaje(canal, method, properties, body, conexion_idempotencia):
 
 
 def main():
+    # Healthcheck HTTP: arranca ANTES de conectar a RabbitMQ para que, mientras
+    # espera al broker, responda 503 "starting" en lugar de no responder.
+    # Tolera 3 latidos perdidos antes de declararse "unhealthy".
+    estado_salud = health.EstadoSalud(tolerancia_segundos=HEARTBEAT_SEGUNDOS * 3)
+    health.iniciar_servidor(estado_salud, HEALTH_PORT)
+
     conexion_idempotencia = inicializar_db(ALERTAS_DB_PATH)
 
     parametros = pika.URLParameters(RABBITMQ_URL)
@@ -160,12 +170,23 @@ def main():
 
     canal.basic_consume(queue=COLA_PRINCIPAL, on_message_callback=callback)
 
+    def latir():
+        # Corre dentro del loop de la conexión (el mismo que procesa mensajes):
+        # si ese loop se traba o la conexión cae, el latido se detiene.
+        estado_salud.latido()
+        conexion.call_later(HEARTBEAT_SEGUNDOS, latir)
+
+    estado_salud.marcar_consumiendo()
+    conexion.call_later(HEARTBEAT_SEGUNDOS, latir)
+
     logger.info("Worker de Alertas escuchando en la cola '%s'...", COLA_PRINCIPAL)
     try:
         canal.start_consuming()
     except KeyboardInterrupt:
         canal.stop_consuming()
         conexion.close()
+    finally:
+        estado_salud.marcar_detenido()
 
 
 if __name__ == "__main__":
